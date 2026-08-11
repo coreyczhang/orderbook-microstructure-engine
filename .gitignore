@@ -1,0 +1,32 @@
+# ---- C++ build ----
+build/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+CMakeCache.txt
+CMakeFiles/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Data artifacts (regenerated; not checked in) ----
+data/*.csv
+data/out/
+*.parquet
+!data/README.md
+
+# ---- Generated figures ----
+docs/*.png
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/
