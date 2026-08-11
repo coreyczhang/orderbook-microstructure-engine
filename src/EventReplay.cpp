@@ -1,11 +1,14 @@
 #include "obme/EventReplay.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <istream>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+
+#include "obme/OrderFlowImbalance.hpp"
 
 namespace obme {
 
@@ -62,21 +65,40 @@ long long parse_int(const std::string& s, long long fallback, const char* what,
 
 char side_char(Side s) { return s == Side::Buy ? 'B' : 'S'; }
 
-// Writes a top-of-book (L1) snapshot; empty fields when a side is absent.
-void write_book_row(std::ostream& out, std::size_t seq, const Event& ev,
-                    const OrderBook& book) {
-    out << seq << ',' << ev.timestamp << ',';
+// Top-of-book snapshot extracted once per event and reused for both the book
+// CSV and the OFI computation.
+struct L1 {
+    bool has_bid{false};
+    Price bid_px{0};
+    Quantity bid_qty{0};
+    bool has_ask{false};
+    Price ask_px{0};
+    Quantity ask_qty{0};
+};
+
+L1 extract_l1(const OrderBook& book) {
+    L1 l1;
     if (book.has_best_bid()) {
-        out << book.best_bid() << ',' << book.best_quantity(Side::Buy);
-    } else {
-        out << ',';
+        l1.has_bid = true;
+        l1.bid_px = book.best_bid();
+        l1.bid_qty = book.best_quantity(Side::Buy);
     }
-    out << ',';
     if (book.has_best_ask()) {
-        out << book.best_ask() << ',' << book.best_quantity(Side::Sell);
-    } else {
-        out << ',';
+        l1.has_ask = true;
+        l1.ask_px = book.best_ask();
+        l1.ask_qty = book.best_quantity(Side::Sell);
     }
+    return l1;
+}
+
+// Writes a top-of-book (L1) snapshot; empty fields when a side is absent.
+void write_book_row(std::ostream& out, std::size_t seq, Timestamp ts, const L1& l1) {
+    out << seq << ',' << ts << ',';
+    if (l1.has_bid) out << l1.bid_px << ',' << l1.bid_qty;
+    else out << ',';
+    out << ',';
+    if (l1.has_ask) out << l1.ask_px << ',' << l1.ask_qty;
+    else out << ',';
     out << '\n';
 }
 
@@ -88,6 +110,10 @@ const char* EventReplay::trades_header() noexcept {
 
 const char* EventReplay::book_header() noexcept {
     return "seq,timestamp,bid_px,bid_qty,ask_px,ask_qty";
+}
+
+const char* EventReplay::ofi_header() noexcept {
+    return "seq,timestamp,mid,ofi,valid";
 }
 
 std::vector<Event> EventReplay::parse(std::istream& in) {
@@ -134,7 +160,8 @@ std::vector<Event> EventReplay::parse(std::istream& in) {
 }
 
 EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine& engine,
-                                       std::ostream* trades_out, std::ostream* book_out) {
+                                       std::ostream* trades_out, std::ostream* book_out,
+                                       std::ostream* ofi_out) {
     // Stable sort keeps equal-timestamp events in their original arrival order.
     std::stable_sort(events.begin(), events.end(),
                      [](const Event& a, const Event& b) {
@@ -143,7 +170,9 @@ EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine
 
     if (trades_out != nullptr) *trades_out << trades_header() << '\n';
     if (book_out != nullptr) *book_out << book_header() << '\n';
+    if (ofi_out != nullptr) *ofi_out << ofi_header() << '\n';
 
+    OrderFlowImbalance ofi;
     Stats stats;
     for (std::size_t seq = 0; seq < events.size(); ++seq) {
         const Event& ev = events[seq];
@@ -175,8 +204,19 @@ EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine
                             << side_char(t.aggressor_side) << '\n';
             }
         }
+
+        // One L1 snapshot per event, reused for the book CSV and the OFI signal.
+        const L1 l1 = extract_l1(engine.book());
         if (book_out != nullptr) {
-            write_book_row(*book_out, seq, ev, engine.book());
+            write_book_row(*book_out, seq, ev.timestamp, l1);
+        }
+        if (ofi_out != nullptr) {
+            const OrderFlowImbalance::Sample s = ofi.update(
+                l1.has_bid, l1.bid_px, l1.bid_qty, l1.has_ask, l1.ask_px, l1.ask_qty);
+            *ofi_out << seq << ',' << ev.timestamp << ',';
+            if (std::isnan(s.mid)) *ofi_out << ',';
+            else *ofi_out << s.mid << ',';
+            *ofi_out << s.ofi << ',' << (s.valid ? 1 : 0) << '\n';
         }
 
         stats.trades_generated += trades.size();

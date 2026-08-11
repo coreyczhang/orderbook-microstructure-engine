@@ -29,6 +29,7 @@ add_library(obme
     src/OrderBook.cpp
     src/MatchingEngine.cpp
     src/EventReplay.cpp
+    src/OrderFlowImbalance.cpp
 )
 target_include_directories(obme PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(obme PRIVATE obme_warnings)

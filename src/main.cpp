@@ -68,9 +68,11 @@ int main(int argc, char** argv) {
 
         const std::filesystem::path trades_path = out_dir / "trades.csv";
         const std::filesystem::path book_path = out_dir / "book.csv";
+        const std::filesystem::path ofi_path = out_dir / "ofi.csv";
         std::ofstream trades_out(trades_path);
         std::ofstream book_out(book_path);
-        if (!trades_out || !book_out) {
+        std::ofstream ofi_out(ofi_path);
+        if (!trades_out || !book_out || !ofi_out) {
             std::cerr << "error: cannot open output files in '" << out_dir.string()
                       << "'\n";
             return 1;
@@ -78,14 +80,14 @@ int main(int argc, char** argv) {
 
         std::vector<obme::Event> events = obme::EventReplay::parse(in);
         obme::MatchingEngine engine;
-        const obme::EventReplay::Stats stats =
-            obme::EventReplay::replay(std::move(events), engine, &trades_out, &book_out);
+        const obme::EventReplay::Stats stats = obme::EventReplay::replay(
+            std::move(events), engine, &trades_out, &book_out, &ofi_out);
 
         std::cout << "Replayed " << stats.events_processed << " events -> "
-                  << stats.trades_generated << " trades, "
-                  << stats.executed_volume << " shares executed.\n"
-                  << "Wrote " << trades_path.string() << " and " << book_path.string()
-                  << "\n";
+                  << stats.trades_generated << " trades, " << stats.executed_volume
+                  << " shares executed.\n"
+                  << "Wrote " << trades_path.string() << ", " << book_path.string()
+                  << ", and " << ofi_path.string() << "\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";

@@ -23,9 +23,6 @@ data/out/
 *.parquet
 !data/README.md
 
-# ---- Generated figures ----
-docs/*.png
-
 # ---- OS / editor ----
 .DS_Store
 .idea/

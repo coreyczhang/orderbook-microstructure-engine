@@ -7,7 +7,7 @@ market-microstructure research on **public data only**.
 
 > **Status:** work in progress. This README grows milestone by milestone.
 > Currently implemented: **M1 — core data structures**, **M2 — matching engine**,
-> and **M3 — event replay + synthetic data pipeline**.
+> **M3 — event replay + synthetic data pipeline**, and **M4 — OFI signal + backtest**.
 
 ---
 
@@ -28,7 +28,7 @@ randomized invariant stress test); the Python layer handles the statistical back
 | M1 | Core data structures: `Order`, `PriceLevel`, `OrderBook` (add/cancel/modify) + tests | ✅ done |
 | M2 | Matching engine: price-time priority, partial fills, market orders, trades | ✅ done |
 | M3 | Event replay + synthetic data pipeline (CSV) + ground-truth validation | ✅ done |
-| M4 | OFI signal + Python regression/backtest + plots | ⏳ planned |
+| M4 | OFI signal (C++) + Python regression/backtest + plots | ✅ done |
 | M5 | Polish: full write-up, architecture diagram, CI | ⏳ planned |
 
 ## Build & test (C++)
@@ -42,26 +42,31 @@ ctest --test-dir build --output-on-failure
 Requires a C++17 compiler and CMake ≥ 3.14. GoogleTest is fetched automatically via
 CMake `FetchContent` — no manual install needed.
 
-## Run the pipeline (M3)
+## Run the pipeline
 
-Generate a synthetic event stream, reconstruct the book with the C++ engine, and verify
-the reconstruction against the generator's ground truth:
+Generate a synthetic event stream, reconstruct the book, validate against ground truth,
+then compute and backtest the OFI signal:
 
 ```bash
 # 1. Generate 50k synthetic events + ground-truth top-of-book snapshots
 python python/generate_synthetic.py --out data/events.csv \
     --truth data/events_truth_l1.csv --events 50000 --seed 42
 
-# 2. Replay through the engine -> data/out/trades.csv, data/out/book.csv
+# 2. Replay through the engine -> trades.csv, book.csv, ofi.csv
 ./build/engine data/events.csv --out-dir data/out
 
 # 3. Prove the reconstructed book matches ground truth, row for row
 python python/validate.py --engine-book data/out/book.csv \
     --truth data/events_truth_l1.csv
+
+# 4. Backtest the OFI signal (chronological train/test split) and plot
+python python/backtest.py --ofi data/out/ofi.csv --bin-events 50 --train-frac 0.7
+python python/plots.py
 ```
 
-The generator and validator use only the Python standard library. The M4 backtest adds
-`numpy`, `pandas`, `statsmodels`, and `matplotlib` (see `python/requirements.txt`).
+The generator and validator use only the Python standard library. The backtest and plots
+add `numpy`, `pandas`, and `matplotlib` (see `python/requirements.txt`); the OLS is
+implemented directly on numpy, so no heavyweight stats package is required.
 
 ## Design notes (M1)
 
@@ -114,11 +119,56 @@ seed so any failure reproduces.
 Real **LOBSTER** sample data will be adapted to the same event schema in a later pass; the
 synthetic path keeps the whole pipeline reproducible and self-validating in the meantime.
 
-## Order flow imbalance & methodology
+## Order flow imbalance & methodology (M4)
 
-OFI is implemented following the general framework of Cont, Kukanov & Stoikov,
-*"The Price Impact of Order Book Events"* (2014) — a public, well-known academic paper.
-Full explanation and citation will land with M4.
+**Why OFI?** The top of the book is where price is discovered. When buy-side depth grows
+faster than sell-side depth — new bids arriving, asks being consumed or cancelled — the
+mid tends to tick up, and vice-versa. **Order Flow Imbalance** turns that intuition into a
+single signed number per book update. It is a natural, well-studied microstructure signal
+because it summarizes the *net* pressure from every event type (adds, cancels, executions)
+in one quantity.
+
+**Definition.** For each update `n` with best bid `(Pb, qb)` and best ask `(Pa, qa)`,
+[`OrderFlowImbalance`](include/obme/OrderFlowImbalance.hpp) computes `OFI_n = e^b_n − e^a_n`:
+
+```
+e^b_n =  qb_n · 1{Pb_n ≥ Pb_{n-1}}  −  qb_{n-1} · 1{Pb_n ≤ Pb_{n-1}}
+e^a_n =  qa_n · 1{Pa_n ≤ Pa_{n-1}}  −  qa_{n-1} · 1{Pa_n ≥ Pa_{n-1}}
+```
+
+`e^b` is the net change in bid-side depth and `e^a` the net change in ask-side depth, so a
+positive OFI reflects net buying pressure. This is the general formulation of
+Cont, Kukanov & Stoikov, *"The Price Impact of Order Book Events"*, Journal of Financial
+Econometrics 12(1), 47–88 (2014) — a public, well-known academic paper. This project
+implements the **published general methodology only**, not any firm-specific variant.
+
+The signal is computed in C++ during replay and streamed to `ofi.csv`; the Python
+[`backtest.py`](python/backtest.py) bins it in event time and regresses returns on OFI with
+a **chronological** (never shuffled) train/test split, and [`plots.py`](python/plots.py)
+renders the figures below.
+
+## Results (M4)
+
+On the default synthetic stream (seed 42, 50k events, 50-event bins), full numbers and an
+honest discussion of limitations are in [docs/results.md](docs/results.md). Headline:
+
+| Regression | β | t | R² |
+|------------|--:|--:|---:|
+| Contemporaneous `ret_t ~ OFI_t` | +4.76e-3 | 9.6 | 0.085 |
+| Predictive (in-sample) `ret_{t+1} ~ OFI_t` | −2.36e-3 | −4.0 | 0.023 |
+| Predictive (out-of-sample) | — | — | 0.030 |
+
+![OFI vs returns](docs/ofi_scatter.png)
+
+**Contemporaneous impact is strong and correctly signed** (positive OFI ↔ price up),
+replicating the CKS direction. **Predictive power is weak and reverses sign** — this
+bin's OFI slightly *negatively* forecasts next bin's move (transient impact / mean
+reversion), with OOS R² ≈ 3%: statistically detectable only because N is large, and
+economically marginal. On frictionless synthetic data with **no transaction costs
+modeled**, that mixed/negative result is the honest and expected outcome; a suspiciously
+clean predictive edge would be a red flag. The signal-following PnL curve
+([docs/pnl.png](docs/pnl.png)) looks profitable *gross of costs*, but the per-bin edge is
+far below a realistic half-spread — see the caveats in the results doc.
 
 ## Disclaimer
 

@@ -44,14 +44,17 @@ public:
     ///
     /// If `trades_out` is non-null, each generated trade is written to it as
     /// CSV. If `book_out` is non-null, a top-of-book (L1) snapshot is written
-    /// after every event. Both streams receive a header row first. Returns
-    /// summary stats.
+    /// after every event. If `ofi_out` is non-null, the per-event Order Flow
+    /// Imbalance (Cont–Kukanov–Stoikov) is written after every event. Each
+    /// non-null stream receives a header row first. Returns summary stats.
     static Stats replay(std::vector<Event> events, MatchingEngine& engine,
-                        std::ostream* trades_out, std::ostream* book_out);
+                        std::ostream* trades_out, std::ostream* book_out,
+                        std::ostream* ofi_out = nullptr);
 
     /// Column header lines written to each output (also handy for tests).
     static const char* trades_header() noexcept;
     static const char* book_header() noexcept;
+    static const char* ofi_header() noexcept;
 };
 
 }  // namespace obme

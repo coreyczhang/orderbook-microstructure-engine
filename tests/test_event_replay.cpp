@@ -105,6 +105,37 @@ TEST(EventReplay, ReplayReconstructsBookAndTrades) {
     EXPECT_EQ(rows, 3);
 }
 
+TEST(EventReplay, ReplayEmitsOfiColumnPerEvent) {
+    std::istringstream in(
+        "timestamp,event_type,order_id,side,price,quantity\n"
+        "1,ADD,1,B,100,10\n"
+        "2,ADD,2,S,101,10\n"
+        "3,ADD,3,S,101,5\n");  // grows ask queue at 101 -> OFI negative once two-sided
+
+    std::vector<Event> events = EventReplay::parse(in);
+    MatchingEngine engine;
+    std::ostringstream ofi;
+    EventReplay::replay(std::move(events), engine, nullptr, nullptr, &ofi);
+
+    std::istringstream ofi_in(ofi.str());
+    std::string line;
+    ASSERT_TRUE(std::getline(ofi_in, line));
+    EXPECT_EQ(line, EventReplay::ofi_header());
+
+    int rows = 0;
+    std::string last;
+    while (std::getline(ofi_in, line)) {
+        if (!line.empty()) {
+            ++rows;
+            last = line;
+        }
+    }
+    EXPECT_EQ(rows, 3);  // one snapshot per event
+    // Final event grows the ask queue by 5 at an unchanged best ask -> e^a=+5,
+    // e^b=0 -> OFI = -5, and the row is marked valid (1).
+    EXPECT_NE(last.find("-5,1"), std::string::npos);
+}
+
 TEST(EventReplay, ReplayStableSortsByTimestamp) {
     // Deliberately out-of-order timestamps; replay must process 1 then 2.
     std::istringstream in(
