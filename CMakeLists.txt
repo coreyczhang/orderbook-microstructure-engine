@@ -27,6 +27,7 @@ target_compile_options(obme_warnings INTERFACE -Wall -Wextra -Wpedantic)
 add_library(obme
     src/PriceLevel.cpp
     src/OrderBook.cpp
+    src/MatchingEngine.cpp
 )
 target_include_directories(obme PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(obme PRIVATE obme_warnings)

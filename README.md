@@ -6,7 +6,7 @@ backtests its short-horizon predictive power. Built as a portfolio project explo
 market-microstructure research on **public data only**.
 
 > **Status:** work in progress. This README grows milestone by milestone.
-> Currently implemented: **M1 — core data structures** (`Order`, `PriceLevel`, `OrderBook`).
+> Currently implemented: **M1 — core data structures** and **M2 — matching engine**.
 
 ---
 
@@ -25,7 +25,7 @@ randomized invariant stress test); the Python layer handles the statistical back
 | Milestone | Scope | State |
 |-----------|-------|-------|
 | M1 | Core data structures: `Order`, `PriceLevel`, `OrderBook` (add/cancel/modify) + tests | ✅ done |
-| M2 | Matching engine: price-time priority, partial fills, trades | ⏳ planned |
+| M2 | Matching engine: price-time priority, partial fills, market orders, trades | ✅ done |
 | M3 | Event replay + synthetic data pipeline (CSV) | ⏳ planned |
 | M4 | OFI signal + Python regression/backtest + plots | ⏳ planned |
 | M5 | Polish: full write-up, architecture diagram, CI | ⏳ planned |
@@ -54,6 +54,25 @@ CMake `FetchContent` — no manual install needed.
   tree with a flat array of price levels over a bounded price range — noted here as a
   deliberate follow-up.
 - **RAII throughout:** node ownership lives in `std::unique_ptr`; no raw `new`/`delete`.
+
+## Matching engine (M2)
+
+`MatchingEngine` processes an incoming order stream against the book with strict
+**price-time priority**: an aggressor sweeps the opposite side best-price-first, then
+oldest-order-first within a price, at each resting order's price. It handles partial
+fills (of both the aggressor and the resting order), market orders (which sweep
+regardless of price and never rest their remainder), and a `modify` that re-injects a
+repriced order through matching so a reprice that crosses the book executes. A resting
+limit order's unfilled remainder joins the book only after all crossing liquidity is
+exhausted, so the engine never leaves the book crossed.
+
+Test rigor: alongside targeted unit tests (full/partial fills, multi-level sweeps, time
+priority, out-of-sequence arrivals, market-order edge cases, repriced-modify crossings),
+a **randomized stress test** runs 20,000 pseudo-random events through the engine and, after
+*every* operation, asserts structural invariants (level totals equal the sum of their
+orders, no lingering empty levels, id index consistency, positive quantities), a
+never-crossed book, and a per-operation share-conservation identity — all with a fixed
+seed so any failure reproduces.
 
 ## Order flow imbalance & methodology
 

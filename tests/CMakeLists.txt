@@ -14,6 +14,8 @@ include(GoogleTest)
 add_executable(obme_tests
     test_price_level.cpp
     test_order_book.cpp
+    test_matching_engine.cpp
+    test_invariants.cpp
 )
 target_link_libraries(obme_tests PRIVATE obme obme_warnings GTest::gtest_main)
 

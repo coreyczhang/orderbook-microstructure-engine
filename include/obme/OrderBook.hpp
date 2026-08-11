@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <unordered_map>
+#include <vector>
 
 #include "obme/Order.hpp"
 #include "obme/PriceLevel.hpp"
@@ -41,6 +42,11 @@ public:
     bool modify_order(OrderId id, Price new_price, Quantity new_quantity);
 
     bool contains(OrderId id) const { return locations_.count(id) != 0; }
+
+    /// Returns a pointer to the resting order with the given id, or nullptr if
+    /// it is not in the book. Valid until that order is cancelled/modified or
+    /// the book is mutated.
+    const Order* find(OrderId id) const;
     std::size_t order_count() const noexcept { return locations_.size(); }
     bool empty(Side side) const { return side_map(side).is_empty; }
 
@@ -50,6 +56,20 @@ public:
     /// Best (highest) bid / best (lowest) ask price. Precondition: side non-empty.
     Price best_bid() const;
     Price best_ask() const;
+
+    /// The front-of-queue (oldest, highest-priority) order at the best price on
+    /// `side` — i.e. the next order a crossing aggressor would match against.
+    /// Precondition: that side is non-empty. Used by the matching engine.
+    const Order& best_order(Side side) const;
+
+    /// Structural self-check for tests: every level is non-empty and priced to
+    /// its map key, each level's total_quantity equals the sum of its orders'
+    /// quantities, every resting order has positive quantity and is registered
+    /// in the id index with the right (side, price), and the id index size
+    /// matches the number of resting orders. Does NOT check for a crossed book
+    /// (a bare OrderBook is allowed to be crossed; keeping it uncrossed is the
+    /// matching engine's job). Returns true if all structural invariants hold.
+    bool check_invariants() const;
 
     /// Aggregate resting quantity at the best price on `side` (0 if empty).
     Quantity best_quantity(Side side) const;
@@ -66,6 +86,13 @@ public:
     bool price_at_level(Side side, std::size_t level, Price& out) const;
 
     std::size_t level_count(Side side) const noexcept { return side_map(side).size; }
+
+    /// Total resting shares across a side (sum of every level's quantity).
+    Quantity total_shares(Side side) const;
+
+    /// All resting orders, bids first (best→worst) then asks (best→worst), each
+    /// level in FIFO order. For inspection, book export, and conservation tests.
+    std::vector<Order> snapshot() const;
 
 private:
     // Bids: highest price first. Asks: lowest price first.

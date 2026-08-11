@@ -24,6 +24,20 @@ void OrderBook::add_limit_order(const Order& order) {
 
 void OrderBook::remove_location(OrderId id) { locations_.erase(id); }
 
+const Order* OrderBook::find(OrderId id) const {
+    auto loc_it = locations_.find(id);
+    if (loc_it == locations_.end()) {
+        return nullptr;
+    }
+    const Location loc = loc_it->second;
+    if (loc.side == Side::Buy) {
+        auto lvl = bids_.find(loc.price);
+        return lvl == bids_.end() ? nullptr : lvl->second.find(id);
+    }
+    auto lvl = asks_.find(loc.price);
+    return lvl == asks_.end() ? nullptr : lvl->second.find(id);
+}
+
 bool OrderBook::cancel_order(OrderId id) {
     auto loc_it = locations_.find(id);
     if (loc_it == locations_.end()) {
@@ -93,6 +107,15 @@ Price OrderBook::best_ask() const {
     return asks_.begin()->first;
 }
 
+const Order& OrderBook::best_order(Side side) const {
+    if (side == Side::Buy) {
+        assert(!bids_.empty() && "best_order() on empty bid side");
+        return bids_.begin()->second.front();
+    }
+    assert(!asks_.empty() && "best_order() on empty ask side");
+    return asks_.begin()->second.front();
+}
+
 Quantity OrderBook::best_quantity(Side side) const {
     if (side == Side::Buy) {
         return bids_.empty() ? 0 : bids_.begin()->second.total_quantity();
@@ -134,6 +157,59 @@ Quantity OrderBook::quantity_at_level(Side side, std::size_t level) const {
 bool OrderBook::price_at_level(Side side, std::size_t level, Price& out) const {
     return side == Side::Buy ? level_price_from_top(bids_, level, out)
                              : level_price_from_top(asks_, level, out);
+}
+
+Quantity OrderBook::total_shares(Side side) const {
+    Quantity total = 0;
+    if (side == Side::Buy) {
+        for (const auto& [price, level] : bids_) total += level.total_quantity();
+    } else {
+        for (const auto& [price, level] : asks_) total += level.total_quantity();
+    }
+    return total;
+}
+
+std::vector<Order> OrderBook::snapshot() const {
+    std::vector<Order> out;
+    out.reserve(locations_.size());
+    for (const auto& [price, level] : bids_) {
+        for (const Order& o : level.snapshot()) out.push_back(o);
+    }
+    for (const auto& [price, level] : asks_) {
+        for (const Order& o : level.snapshot()) out.push_back(o);
+    }
+    return out;
+}
+
+bool OrderBook::check_invariants() const {
+    std::size_t counted = 0;
+
+    auto verify_side = [&](const auto& side_map, Side side) -> bool {
+        for (const auto& [key, level] : side_map) {
+            if (level.empty()) return false;             // no lingering empty levels
+            if (level.price() != key) return false;      // level priced to its key
+            Quantity sum = 0;
+            for (const Order& o : level.snapshot()) {
+                if (o.quantity <= 0) return false;       // positive resting size
+                if (o.side != side) return false;        // parked on the right side
+                if (o.price != key) return false;        // priced to its level
+                auto loc = locations_.find(o.id);
+                if (loc == locations_.end()) return false;       // indexed
+                if (loc->second.side != side) return false;      // indexed side
+                if (loc->second.price != key) return false;      // indexed price
+                sum += o.quantity;
+                ++counted;
+            }
+            if (sum != level.total_quantity()) return false;  // cached total is exact
+        }
+        return true;
+    };
+
+    if (!verify_side(bids_, Side::Buy)) return false;
+    if (!verify_side(asks_, Side::Sell)) return false;
+
+    // Every indexed id was seen exactly once, and no extras exist.
+    return counted == locations_.size();
 }
 
 }  // namespace obme
