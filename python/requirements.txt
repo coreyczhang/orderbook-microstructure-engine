@@ -1,0 +1,7 @@
+# Analysis layer dependencies.
+# generate_synthetic.py and validate.py use only the standard library; these are
+# for the OFI backtest and plotting in M4.
+numpy>=1.24
+pandas>=2.0
+statsmodels>=0.14
+matplotlib>=3.7

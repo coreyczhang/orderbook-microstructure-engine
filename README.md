@@ -6,7 +6,8 @@ backtests its short-horizon predictive power. Built as a portfolio project explo
 market-microstructure research on **public data only**.
 
 > **Status:** work in progress. This README grows milestone by milestone.
-> Currently implemented: **M1 — core data structures** and **M2 — matching engine**.
+> Currently implemented: **M1 — core data structures**, **M2 — matching engine**,
+> and **M3 — event replay + synthetic data pipeline**.
 
 ---
 
@@ -26,7 +27,7 @@ randomized invariant stress test); the Python layer handles the statistical back
 |-----------|-------|-------|
 | M1 | Core data structures: `Order`, `PriceLevel`, `OrderBook` (add/cancel/modify) + tests | ✅ done |
 | M2 | Matching engine: price-time priority, partial fills, market orders, trades | ✅ done |
-| M3 | Event replay + synthetic data pipeline (CSV) | ⏳ planned |
+| M3 | Event replay + synthetic data pipeline (CSV) + ground-truth validation | ✅ done |
 | M4 | OFI signal + Python regression/backtest + plots | ⏳ planned |
 | M5 | Polish: full write-up, architecture diagram, CI | ⏳ planned |
 
@@ -40,6 +41,27 @@ ctest --test-dir build --output-on-failure
 
 Requires a C++17 compiler and CMake ≥ 3.14. GoogleTest is fetched automatically via
 CMake `FetchContent` — no manual install needed.
+
+## Run the pipeline (M3)
+
+Generate a synthetic event stream, reconstruct the book with the C++ engine, and verify
+the reconstruction against the generator's ground truth:
+
+```bash
+# 1. Generate 50k synthetic events + ground-truth top-of-book snapshots
+python python/generate_synthetic.py --out data/events.csv \
+    --truth data/events_truth_l1.csv --events 50000 --seed 42
+
+# 2. Replay through the engine -> data/out/trades.csv, data/out/book.csv
+./build/engine data/events.csv --out-dir data/out
+
+# 3. Prove the reconstructed book matches ground truth, row for row
+python python/validate.py --engine-book data/out/book.csv \
+    --truth data/events_truth_l1.csv
+```
+
+The generator and validator use only the Python standard library. The M4 backtest adds
+`numpy`, `pandas`, `statsmodels`, and `matplotlib` (see `python/requirements.txt`).
 
 ## Design notes (M1)
 
@@ -73,6 +95,24 @@ a **randomized stress test** runs 20,000 pseudo-random events through the engine
 orders, no lingering empty levels, id index consistency, positive quantities), a
 never-crossed book, and a per-operation share-conservation identity — all with a fixed
 seed so any failure reproduces.
+
+## Data pipeline (M3)
+
+- **`EventReplay`** parses a tick-level event CSV (`ADD` / `CANCEL` / `MODIFY` /
+  `MARKET`), stable-sorts by timestamp, and feeds each event through the matching
+  engine, streaming out every trade and a top-of-book snapshot per event.
+- **`engine` CLI** wraps this: `engine <events.csv> --out-dir <dir>` writes `trades.csv`
+  and `book.csv`.
+- **`generate_synthetic.py`** produces the event stream from a Poisson arrival process
+  with limit prices around a random-walking mid and occasional crossing orders. It runs
+  its own **shadow book** with the same price-time rules, so cancels always reference live
+  orders and its top-of-book is exact **ground truth**.
+- **`validate.py`** diffs the engine's `book.csv` against that ground truth. On the
+  default 50k-event stream the reconstruction matches on **all 50,000 snapshots** — a
+  direct correctness check, not just a smoke test.
+
+Real **LOBSTER** sample data will be adapted to the same event schema in a later pass; the
+synthetic path keeps the whole pipeline reproducible and self-validating in the meantime.
 
 ## Order flow imbalance & methodology
 
