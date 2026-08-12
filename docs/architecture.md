@@ -62,7 +62,7 @@ that proves the reconstruction is exact.
 | [`OrderBook`](../include/obme/OrderBook.hpp) | Two-sided book, resting-order maintenance | `std::map` per side (best at `begin()`); `id→(side,price)` index; `check_invariants()` self-test |
 | [`MatchingEngine`](../include/obme/MatchingEngine.hpp) | Cross incoming orders against the book | Price-time priority; partial fills; market orders; modify = in-place decrease or cancel+re-submit |
 | [`EventReplay`](../include/obme/EventReplay.hpp) | Parse + replay an event stream | Header-aware CSV parse; stable-sort by timestamp; streams trades / L1 book / OFI |
-| [`OrderFlowImbalance`](../include/obme/OrderFlowImbalance.hpp) | Per-event OFI from L1 updates | Cont–Kukanov–Stoikov formulation; gates on a two-sided book |
+| [`OrderFlowImbalance`](../include/obme/OrderFlowImbalance.hpp) | Per-event OFI from top-of-book updates | Cont–Kukanov–Stoikov; best-level (L1) **and** integrated top-`N` "deep" OFI; gates on a two-sided book |
 | [`engine` CLI](../src/main.cpp) | `engine <events.csv> --out-dir DIR` | Writes `trades.csv`, `book.csv`, `ofi.csv` |
 
 ### Python layer (`python/`)

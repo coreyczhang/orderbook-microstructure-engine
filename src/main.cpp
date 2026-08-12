@@ -1,3 +1,4 @@
+#include <cstddef>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -10,10 +11,11 @@
 namespace {
 
 void print_usage(const char* argv0) {
-    std::cerr << "Usage: " << argv0 << " <events.csv> [--out-dir DIR]\n\n"
+    std::cerr << "Usage: " << argv0 << " <events.csv> [--out-dir DIR] [--ofi-levels N]\n\n"
               << "Replays a tick-level event stream through the matching engine and\n"
-              << "writes trades.csv and book.csv (top-of-book snapshots) to DIR\n"
-              << "(default: current directory).\n";
+              << "writes trades.csv, book.csv (top-of-book snapshots) and ofi.csv to DIR\n"
+              << "(default: current directory). --ofi-levels sets the depth of the\n"
+              << "integrated OFI signal (default 5).\n";
 }
 
 }  // namespace
@@ -21,6 +23,7 @@ void print_usage(const char* argv0) {
 int main(int argc, char** argv) {
     std::string events_path;
     std::filesystem::path out_dir = ".";
+    std::size_t ofi_levels = 5;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -34,6 +37,19 @@ int main(int argc, char** argv) {
                 return 2;
             }
             out_dir = argv[++i];
+        } else if (arg == "--ofi-levels") {
+            if (i + 1 >= argc) {
+                std::cerr << "error: --ofi-levels requires an integer argument\n";
+                return 2;
+            }
+            try {
+                const int n = std::stoi(argv[++i]);
+                if (n < 1) throw std::invalid_argument("must be >= 1");
+                ofi_levels = static_cast<std::size_t>(n);
+            } catch (const std::exception&) {
+                std::cerr << "error: --ofi-levels must be a positive integer\n";
+                return 2;
+            }
         } else if (!arg.empty() && arg[0] == '-') {
             std::cerr << "error: unknown option '" << arg << "'\n";
             print_usage(argv[0]);
@@ -81,7 +97,7 @@ int main(int argc, char** argv) {
         std::vector<obme::Event> events = obme::EventReplay::parse(in);
         obme::MatchingEngine engine;
         const obme::EventReplay::Stats stats = obme::EventReplay::replay(
-            std::move(events), engine, &trades_out, &book_out, &ofi_out);
+            std::move(events), engine, &trades_out, &book_out, &ofi_out, ofi_levels);
 
         std::cout << "Replayed " << stats.events_processed << " events -> "
                   << stats.trades_generated << " trades, " << stats.executed_volume

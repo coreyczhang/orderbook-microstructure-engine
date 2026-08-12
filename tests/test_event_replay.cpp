@@ -132,8 +132,9 @@ TEST(EventReplay, ReplayEmitsOfiColumnPerEvent) {
     }
     EXPECT_EQ(rows, 3);  // one snapshot per event
     // Final event grows the ask queue by 5 at an unchanged best ask -> e^a=+5,
-    // e^b=0 -> OFI = -5, and the row is marked valid (1).
-    EXPECT_NE(last.find("-5,1"), std::string::npos);
+    // e^b=0 -> OFI = -5. Columns: seq,timestamp,mid,ofi,ofi_deep,valid, so the
+    // row ends with ...,-5,-5,1 (l1 == deep with a one-level-deep book, valid).
+    EXPECT_NE(last.find(",-5,-5,1"), std::string::npos);
 }
 
 TEST(EventReplay, ReplayStableSortsByTimestamp) {

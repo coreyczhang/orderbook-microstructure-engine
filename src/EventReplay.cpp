@@ -91,6 +91,19 @@ L1 extract_l1(const OrderBook& book) {
     return l1;
 }
 
+// Extracts up to `n` price levels per side (best first) for the OFI signal.
+void extract_levels(const OrderBook& book, std::size_t n, Side side,
+                    std::vector<Price>& px, std::vector<Quantity>& qty) {
+    px.clear();
+    qty.clear();
+    for (std::size_t m = 0; m < n; ++m) {
+        Price p;
+        if (!book.price_at_level(side, m, p)) break;  // book thinner than n
+        px.push_back(p);
+        qty.push_back(book.quantity_at_level(side, m));
+    }
+}
+
 // Writes a top-of-book (L1) snapshot; empty fields when a side is absent.
 void write_book_row(std::ostream& out, std::size_t seq, Timestamp ts, const L1& l1) {
     out << seq << ',' << ts << ',';
@@ -113,7 +126,7 @@ const char* EventReplay::book_header() noexcept {
 }
 
 const char* EventReplay::ofi_header() noexcept {
-    return "seq,timestamp,mid,ofi,valid";
+    return "seq,timestamp,mid,ofi,ofi_deep,valid";
 }
 
 std::vector<Event> EventReplay::parse(std::istream& in) {
@@ -161,7 +174,7 @@ std::vector<Event> EventReplay::parse(std::istream& in) {
 
 EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine& engine,
                                        std::ostream* trades_out, std::ostream* book_out,
-                                       std::ostream* ofi_out) {
+                                       std::ostream* ofi_out, std::size_t ofi_levels) {
     // Stable sort keeps equal-timestamp events in their original arrival order.
     std::stable_sort(events.begin(), events.end(),
                      [](const Event& a, const Event& b) {
@@ -172,7 +185,9 @@ EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine
     if (book_out != nullptr) *book_out << book_header() << '\n';
     if (ofi_out != nullptr) *ofi_out << ofi_header() << '\n';
 
-    OrderFlowImbalance ofi;
+    OrderFlowImbalance ofi(ofi_levels);
+    std::vector<Price> bid_px, ask_px;
+    std::vector<Quantity> bid_qty, ask_qty;
     Stats stats;
     for (std::size_t seq = 0; seq < events.size(); ++seq) {
         const Event& ev = events[seq];
@@ -211,12 +226,14 @@ EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine
             write_book_row(*book_out, seq, ev.timestamp, l1);
         }
         if (ofi_out != nullptr) {
-            const OrderFlowImbalance::Sample s = ofi.update(
-                l1.has_bid, l1.bid_px, l1.bid_qty, l1.has_ask, l1.ask_px, l1.ask_qty);
+            extract_levels(engine.book(), ofi_levels, Side::Buy, bid_px, bid_qty);
+            extract_levels(engine.book(), ofi_levels, Side::Sell, ask_px, ask_qty);
+            const OrderFlowImbalance::Sample s =
+                ofi.update(bid_px, bid_qty, ask_px, ask_qty);
             *ofi_out << seq << ',' << ev.timestamp << ',';
             if (std::isnan(s.mid)) *ofi_out << ',';
             else *ofi_out << s.mid << ',';
-            *ofi_out << s.ofi << ',' << (s.valid ? 1 : 0) << '\n';
+            *ofi_out << s.l1 << ',' << s.deep << ',' << (s.valid ? 1 : 0) << '\n';
         }
 
         stats.trades_generated += trades.size();

@@ -1,80 +1,89 @@
 # OFI Backtest Results
 
 **Data:** synthetic order-flow stream (`--seed 42`, 50,000 events → 17,995 trades),
-reconstructed by the C++ engine. Per-event Order Flow Imbalance (OFI) computed with the
-Cont–Kukanov–Stoikov formulation (see [`OrderFlowImbalance`](../include/obme/OrderFlowImbalance.hpp)).
+reconstructed by the C++ engine. Two OFI signals are computed per event with the
+Cont–Kukanov–Stoikov formulation ([`OrderFlowImbalance`](../include/obme/OrderFlowImbalance.hpp)):
+
+- **`ofi`** — best-level (L1) OFI.
+- **`ofi_deep`** — integrated OFI over the top **5** price levels.
+
 Observations are aggregated into **event-time bins of 50 events** (998 usable bins);
-returns are mid-price changes in ticks. The train/test split is **chronological** — the
-first 70% of bins (698) train, the last 30% (300) test — never shuffled, so no future
-information leaks into the fit.
+returns are mid-price changes in ticks. The train/test split is **chronological** — first
+70% train (698 bins), last 30% test (300 bins) — never shuffled. The trading PnL charges
+**0.5 tick per unit of position turnover**.
 
 ## Regressions
 
-| Regression | Slope β | t-stat | R² | Sample |
-|------------|--------:|-------:|----:|--------|
-| **Contemporaneous** `ret_t ~ OFI_t` | +4.76e-3 | 9.63 | 0.085 | 998 bins (full) |
-| **Predictive (in-sample)** `ret_{t+1} ~ OFI_t` | −2.36e-3 | −4.04 | 0.023 | 698 train bins |
-| **Predictive (out-of-sample)** | — | — | 0.030 | 300 test bins |
+| Signal | Contemporaneous `ret_t ~ OFI_t` | | Predictive `ret_{t+1} ~ OFI_t` | | |
+|--------|--------:|-----:|--------:|-----:|-----:|
+| | β | R² | β | t | OOS R² |
+| `ofi` (L1)   | +4.76e-3 | **0.085** | −2.36e-3 | −4.0 | 0.030 |
+| `ofi_deep` (top-5) | +3.11e-5 | **0.531** | −1.51e-5 | −7.3 | 0.057 |
 
-![OFI vs returns](ofi_scatter.png)
+![OFI vs returns (L1)](ofi_scatter.png)
 
-**Reading this honestly:**
+**What the depth extension buys us.** Integrating OFI across the top 5 levels lifts the
+**contemporaneous** R² from 0.085 to **0.531** (t rises from 9.6 to 33.6) — depth beyond
+the touch carries most of the price-impact information, consistent with the multi-level OFI
+literature (Cont, Cucuringu & Xu, 2023). Predictive OOS R² also roughly doubles (0.030 →
+0.057) but stays small.
 
-- **Contemporaneous impact is real and correctly signed.** A positive OFI (net buying
-  pressure at the top of book) coincides with the mid ticking *up* — the direction Cont,
-  Kukanov & Stoikov document. R² ≈ 8.5% is far below the 60–70% they report on real
-  equities; that gap is expected here because our signal uses only L1 (best level), the
-  synthetic flow is zero-intelligence, and we bin in event time rather than clock time.
-- **The predictive relationship is weak and *reverses sign*.** This bin's OFI slightly
-  *negatively* predicts next bin's return (β < 0), i.e. the impact is largely **transient**
-  and partially mean-reverts (a bid-ask-bounce-like effect baked into the generator).
-  Out-of-sample R² is ≈ 3% — statistically non-trivial (t ≈ −4, p ≈ 5e-5) only because
-  there are ~1000 bins, **not** because the effect is economically large.
+**The predictive sign is negative for both.** This bin's OFI slightly *negatively*
+forecasts next bin's move — impact is largely **transient** and partially mean-reverts (a
+bounce-like artifact of the zero-intelligence generator). Significance (t = −4 to −7) comes
+from ~1000 bins, not economic magnitude.
 
-## Signal PnL vs. baseline
+## Signal PnL vs. baseline — gross and net of costs
 
 ![Cumulative PnL](pnl.png)
 
-The strategy takes `position = sign(â + b̂·OFI_t)` using coefficients fit **only on the
-training set**, applied through the whole series. Because the fitted β is negative, this
-is effectively a **contrarian** rule (fade the imbalance). It accumulates ~85 ticks and
-keeps rising *after* the train/test boundary (dashed line), consistent with the small
-positive OOS R²; buy-and-hold drifts slightly negative.
+Position is `sign(â + b̂·OFI_t)` from the **train** fit (a contrarian rule, since β < 0),
+applied throughout. Out-of-sample (test-set) totals, in ticks:
 
-**Do not over-read this curve.** Major caveats:
+| Signal | test gross | test net (0.5-tick cost) | test turnover |
+|--------|-----------:|-------------------------:|--------------:|
+| `ofi` (L1)   | +20.5 | **−123.5** | 288 |
+| `ofi_deep` (top-5) | +42.5 | **−82.5** | 250 |
 
-1. **No transaction costs.** PnL is gross, in ticks, trading every bin. The per-bin edge
-   is ~0.08 ticks; a realistic half-spread (~0.5 tick per round trip) would almost
-   certainly erase it. With costs, this strategy is not obviously profitable.
-2. **Synthetic, mechanical data.** The reversion the strategy exploits is a property of
-   the zero-intelligence generator (transient impact + bounce), not evidence it exists,
-   or has this sign, in real markets.
-3. **Single asset, single seed, short horizon.** ~50 s of simulated time, one price
-   process, one random seed. This is a pipeline demonstration, not a robust alpha study.
-4. **L1-only, single-level OFI.** CKS and follow-ups show multi-level (deeper book) OFI
-   carries additional information not captured here.
+**The edge does not survive transaction costs.** Both signals are modestly profitable
+*gross* (deep more so), but the strategy flips position almost every bin (~250–290 turns
+over 300 test bins), and at 0.5 tick per turn the costs swamp the tiny per-bin edge — net
+PnL is **firmly negative** for both. Deep OFI loses less (higher gross, slightly lower
+turnover), but neither is tradable as-is.
+
+## Honest caveats
+
+1. **Frictionless synthetic, mechanical data.** The exploited reversion is a property of
+   the generator, not evidence it exists (or has this sign) in real markets.
+2. **Costs applied, but naively.** A real strategy would throttle turnover, use a
+   dead-band, or hold longer — this is a deliberately simple sign rule to expose the
+   cost sensitivity, not an optimized system.
+3. **Single asset, single seed, ~50 s of simulated time.** A pipeline demonstration, not a
+   robust alpha study.
+4. **OFI is a signal, not a strategy.** Strong contemporaneous impact ≠ tradable forecast.
 
 ## Takeaway
 
-The engine reconstructs the book exactly (validated to the tick against ground truth) and
-the OFI signal behaves sensibly: **strong, correctly-signed contemporaneous impact; weak,
-transient, economically marginal predictive power** — which, on frictionless synthetic
-data with no cost model, is the honest and expected outcome. Overclaiming a clean
-predictive edge here would be a red flag, not a feature.
+The engine reconstructs the book exactly (validated to the tick against ground truth), and
+the OFI signals behave sensibly and informatively: **multi-level OFI dramatically improves
+contemporaneous explanatory power (R² 0.53), predictive power is weak and transient, and a
+naive signal-following strategy loses money after realistic costs.** That is the honest,
+expected outcome on frictionless synthetic data — reported as measured, not tuned.
 
 ## Reproduce
 
 ```bash
 python python/generate_synthetic.py --out data/events.csv \
     --truth data/events_truth_l1.csv --events 50000 --seed 42
-./build/engine data/events.csv --out-dir data/out
-python python/backtest.py --ofi data/out/ofi.csv --bin-events 50 --train-frac 0.7
-python python/plots.py --bins data/out/bins.csv --summary data/out/backtest_summary.json
+./build/engine data/events.csv --out-dir data/out --ofi-levels 5
+python python/backtest.py --ofi data/out/ofi.csv --bin-events 50 \
+    --train-frac 0.7 --cost-ticks 0.5
+python python/plots.py
 ```
 
 ## Next steps
 
-- Swap in **LOBSTER** real sample data (same event schema) and re-run — the real test of
-  whether OFI predicts, and with which sign, out of sample.
-- Add a transaction-cost model (half-spread + fees) so PnL reflects tradability.
-- Extend OFI to the top *N* levels and compare predictive content.
+- Swap in **LOBSTER** real sample data (same event schema) — the real test of whether OFI
+  predicts, and with which sign, out of sample and net of costs.
+- Turnover-aware position sizing (dead-band / hold) so the gross edge isn't spent on fees.
+- Per-level OFI as separate regressors (not just summed) to see where the information sits.

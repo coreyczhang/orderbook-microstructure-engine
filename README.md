@@ -32,8 +32,10 @@ randomized invariant stress test); the Python layer handles the statistical back
 | M4 | OFI signal (C++) + Python regression/backtest + plots | ✅ done |
 | M5 | Polish: architecture diagram, results write-up, CI | ✅ done |
 
-**Next (post-M5):** swap in real LOBSTER data, add a transaction-cost model, extend OFI to
-the top *N* levels, and (optionally) pybind11 bindings. See [docs/results.md](docs/results.md#next-steps).
+**Post-M5 enhancements (done):** multi-level (top-*N*) integrated OFI, and a
+transaction-cost-aware backtest comparing L1 vs. deep OFI. **Still open:** real LOBSTER
+data, turnover-aware position sizing, per-level OFI regressors, optional pybind11 bindings.
+See [docs/results.md](docs/results.md#next-steps).
 
 ## Build & test (C++)
 
@@ -56,15 +58,16 @@ then compute and backtest the OFI signal:
 python python/generate_synthetic.py --out data/events.csv \
     --truth data/events_truth_l1.csv --events 50000 --seed 42
 
-# 2. Replay through the engine -> trades.csv, book.csv, ofi.csv
-./build/engine data/events.csv --out-dir data/out
+# 2. Replay through the engine -> trades.csv, book.csv, ofi.csv (L1 + top-5 deep)
+./build/engine data/events.csv --out-dir data/out --ofi-levels 5
 
 # 3. Prove the reconstructed book matches ground truth, row for row
 python python/validate.py --engine-book data/out/book.csv \
     --truth data/events_truth_l1.csv
 
-# 4. Backtest the OFI signal (chronological train/test split) and plot
-python python/backtest.py --ofi data/out/ofi.csv --bin-events 50 --train-frac 0.7
+# 4. Backtest L1 vs deep OFI (chronological split, cost-aware PnL) and plot
+python python/backtest.py --ofi data/out/ofi.csv --bin-events 50 \
+    --train-frac 0.7 --cost-ticks 0.5
 python python/plots.py
 ```
 
@@ -144,39 +147,48 @@ e^a_n =  qa_n · 1{Pa_n ≤ Pa_{n-1}}  −  qa_{n-1} · 1{Pa_n ≥ Pa_{n-1}}
 positive OFI reflects net buying pressure. This is the general formulation of
 Cont, Kukanov & Stoikov, *"The Price Impact of Order Book Events"*, Journal of Financial
 Econometrics 12(1), 47–88 (2014) — a public, well-known academic paper. This project
-implements the **published general methodology only**, not any firm-specific variant.
+implements the **published general methodology only**, not any firm-specific variant. The
+engine emits both the **best-level (L1)** OFI and an **integrated "deep" OFI** over the top
+`N` levels (`--ofi-levels`, default 5), the multi-level extension studied by Cont,
+Cucuringu & Xu (2023).
 
-The signal is computed in C++ during replay and streamed to `ofi.csv`; the Python
-[`backtest.py`](python/backtest.py) bins it in event time and regresses returns on OFI with
-a **chronological** (never shuffled) train/test split, and [`plots.py`](python/plots.py)
-renders the figures below.
+The signals are computed in C++ during replay and streamed to `ofi.csv`; the Python
+[`backtest.py`](python/backtest.py) bins them in event time, regresses returns on OFI with
+a **chronological** (never shuffled) train/test split, and runs a **transaction-cost-aware
+PnL**; [`plots.py`](python/plots.py) renders the figures below.
 
-## Results (M4)
+## Results
 
-On the default synthetic stream (seed 42, 50k events, 50-event bins), full numbers and an
-honest discussion of limitations are in [docs/results.md](docs/results.md). Headline:
+On the default synthetic stream (seed 42, 50k events, 50-event bins, 0.5-tick cost), full
+numbers and an honest discussion of limitations are in
+[docs/results.md](docs/results.md). Headline:
 
-| Regression | β | t | R² |
-|------------|--:|--:|---:|
-| Contemporaneous `ret_t ~ OFI_t` | +4.76e-3 | 9.6 | 0.085 |
-| Predictive (in-sample) `ret_{t+1} ~ OFI_t` | −2.36e-3 | −4.0 | 0.023 |
-| Predictive (out-of-sample) | — | — | 0.030 |
+| Signal | Contemp R² | Predictive OOS R² | Test PnL gross | Test PnL **net** |
+|--------|-----------:|------------------:|---------------:|-----------------:|
+| `ofi` (L1)        | 0.085 | 0.030 | +20.5 | **−123.5** |
+| `ofi_deep` (top-5) | **0.531** | 0.057 | +42.5 | **−82.5** |
 
 ![OFI vs returns](docs/ofi_scatter.png)
 
-**Contemporaneous impact is strong and correctly signed** (positive OFI ↔ price up),
-replicating the CKS direction. **Predictive power is weak and reverses sign** — this
-bin's OFI slightly *negatively* forecasts next bin's move (transient impact / mean
-reversion), with OOS R² ≈ 3%: statistically detectable only because N is large, and
-economically marginal. On frictionless synthetic data with **no transaction costs
-modeled**, that mixed/negative result is the honest and expected outcome; a suspiciously
-clean predictive edge would be a red flag. The signal-following PnL curve
-([docs/pnl.png](docs/pnl.png)) looks profitable *gross of costs*, but the per-bin edge is
-far below a realistic half-spread — see the caveats in the results doc.
+Three honest findings:
+
+1. **Multi-level OFI dramatically improves contemporaneous fit** — integrating the top 5
+   levels lifts R² from 0.085 to **0.53**; depth beyond the touch carries most of the
+   price-impact information.
+2. **Predictive power is weak and reverses sign** (β < 0) — OFI slightly *negatively*
+   forecasts the next bin (transient impact / mean reversion); OOS R² stays ≈ 3–6%,
+   significant only because N is large.
+3. **The edge does not survive costs.** Both signals are profitable *gross* but the
+   sign-flipping strategy turns over almost every bin; at 0.5 tick/turn, **net PnL is
+   firmly negative** ([docs/pnl.png](docs/pnl.png)).
+
+On frictionless synthetic data that mixed result is the honest, expected outcome — a
+suspiciously clean predictive edge would be a red flag, not a feature.
 
 ## Testing
 
-- **59 GoogleTest cases** across the order book, matching engine, replay/parse, and OFI.
+- **62 GoogleTest cases** across the order book, matching engine, replay/parse, and OFI
+  (including multi-level OFI).
 - A **randomized invariant stress test**: 20,000 pseudo-random events (fixed seed), with
   structural invariants, a never-crossed book, and per-operation share conservation
   checked after *every* operation.

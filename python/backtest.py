@@ -1,22 +1,21 @@
-"""Backtest the OFI signal against short-horizon forward price moves.
+"""Backtest the OFI signal(s) against short-horizon forward price moves.
 
-Reads the engine's ``ofi.csv`` (per-event Order Flow Imbalance and mid price),
-aggregates it into fixed-size **event-time bins**, and runs two ordinary least
-squares regressions following Cont, Kukanov & Stoikov (2014):
+Reads the engine's ``ofi.csv`` (per-event best-level ``ofi`` and integrated
+``ofi_deep``, plus the mid price), aggregates into fixed-size **event-time
+bins**, and for each signal runs two OLS regressions following Cont, Kukanov &
+Stoikov (2014):
 
-* **Contemporaneous** — bin price change on same-bin OFI. Expected to be strong;
-  it measures mechanical price *impact*, replicating the CKS result.
-* **Predictive** — *next* bin's price change on this bin's OFI. This is the
-  honest out-of-sample question: does OFI forecast the future, or only explain
-  the present? Fit on the first ``--train-frac`` of bins (chronological, never
-  shuffled) and evaluated on the held-out tail to avoid look-ahead bias.
+* **Contemporaneous** — bin price change on same-bin OFI (mechanical impact).
+* **Predictive** — *next* bin's price change on this bin's OFI, fit on the first
+  ``--train-frac`` of bins (chronological, never shuffled) and evaluated on the
+  held-out tail.
 
+It also runs a **transaction-cost-aware PnL**: a position ``sign(â + b̂·OFI)``
+from the train fit, charged ``--cost-ticks`` per unit of turnover, so the
+reported net PnL reflects whether any edge survives the spread.
+
+The OLS is implemented directly on ``numpy`` — no heavyweight stats dependency.
 Writes ``bins.csv`` (for plotting) and ``backtest_summary.json`` (metrics).
-
-The regression is a plain OLS implemented on top of ``numpy`` (coefficients via
-least squares, heteroskedasticity-naive standard errors, R², and a large-sample
-two-sided p-value from the normal approximation) — no heavyweight stats
-dependency, so the analysis runs anywhere ``numpy``/``pandas`` do.
 """
 
 from __future__ import annotations
@@ -24,71 +23,60 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 
+SIGNALS = ["ofi", "ofi_deep"]
 
-def load_bins(ofi_path: str, bin_events: int) -> pd.DataFrame:
-    """Loads valid OFI observations and aggregates them into event-time bins."""
+
+def load_bins(ofi_path: str, bin_events: int, signals: List[str]) -> pd.DataFrame:
+    """Loads valid OFI observations and aggregates them into event-time bins,
+    summing each signal column over the bin."""
     df = pd.read_csv(ofi_path)
     df = df[(df["valid"] == 1) & df["mid"].notna()].reset_index(drop=True)
     if len(df) < 2 * bin_events:
         raise SystemExit(
             f"not enough valid observations ({len(df)}) for bin size {bin_events}"
         )
+    present = [s for s in signals if s in df.columns]
 
     df["bin"] = np.arange(len(df)) // bin_events
     grouped = df.groupby("bin")
-    bins = pd.DataFrame(
-        {
-            "ofi": grouped["ofi"].sum(),
-            "mid_start": grouped["mid"].first(),
-            "mid_end": grouped["mid"].last(),
-            "timestamp": grouped["timestamp"].first(),
-        }
-    )
-    # Drop a possibly-partial final bin so every bin has equal weight.
-    counts = grouped.size()
-    bins = bins[counts == bin_events].reset_index(drop=True)
+    data = {s: grouped[s].sum() for s in present}
+    data["mid_start"] = grouped["mid"].first()
+    data["mid_end"] = grouped["mid"].last()
+    data["timestamp"] = grouped["timestamp"].first()
+    bins = pd.DataFrame(data)
 
-    bins["ret"] = bins["mid_end"] - bins["mid_start"]  # contemporaneous move
-    bins["fwd_ret"] = bins["ret"].shift(-1)  # next bin's move
+    counts = grouped.size()
+    bins = bins[counts == bin_events].reset_index(drop=True)  # equal-weight bins
+    bins["ret"] = bins["mid_end"] - bins["mid_start"]
+    bins["fwd_ret"] = bins["ret"].shift(-1)
     return bins
 
 
 def _fit(y: np.ndarray, x: np.ndarray) -> Dict[str, float]:
-    """OLS of y on [1, x]. Returns slope, its t-stat/p-value, intercept and R².
-
-    Standard errors are the usual homoskedastic OLS errors; the p-value uses the
-    normal approximation to the t distribution, which is essentially exact at the
-    thousands-of-observations sample sizes here.
-    """
+    """OLS of y on [1, x] with homoskedastic SEs and a normal-approx p-value."""
     design = np.column_stack([np.ones_like(x), x])
     coef, _, _, _ = np.linalg.lstsq(design, y, rcond=None)
     resid = y - design @ coef
     n, k = design.shape
-    dof = n - k
     ss_res = float(resid @ resid)
     ss_tot = float(((y - y.mean()) ** 2).sum())
-    sigma2 = ss_res / dof
+    sigma2 = ss_res / (n - k)
     cov = sigma2 * np.linalg.inv(design.T @ design)
-    se_slope = math.sqrt(cov[1, 1])
-    t_stat = coef[1] / se_slope if se_slope > 0 else float("nan")
-    p_value = math.erfc(abs(t_stat) / math.sqrt(2.0))  # two-sided, normal approx
+    se = math.sqrt(cov[1, 1])
+    t_stat = coef[1] / se if se > 0 else float("nan")
     return {
         "n": int(n),
         "intercept": float(coef[0]),
         "beta": float(coef[1]),
         "t_stat": float(t_stat),
-        "p_value": float(p_value),
+        "p_value": float(math.erfc(abs(t_stat) / math.sqrt(2.0))),
         "r_squared": 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan"),
     }
-
-
-def _ols(y: pd.Series, x: pd.Series) -> Dict[str, float]:
-    return _fit(y.to_numpy(dtype=float), x.to_numpy(dtype=float))
 
 
 def _oos_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -97,35 +85,71 @@ def _oos_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 
 
-def run(ofi_path: str, bin_events: int, train_frac: float) -> Dict[str, object]:
-    bins = load_bins(ofi_path, bin_events)
+def _pnl(
+    signal: np.ndarray,
+    fwd: np.ndarray,
+    a: float,
+    b: float,
+    cost_ticks: float,
+    split: int,
+) -> Dict[str, float]:
+    """Cost-aware PnL of trading position = sign(a + b*signal). Turnover is the
+    absolute position change; each unit is charged ``cost_ticks``."""
+    position = np.sign(a + b * signal)
+    turnover = np.abs(np.diff(position, prepend=0.0))
+    gross = position * fwd
+    net = gross - cost_ticks * turnover
+    test = slice(split, None)
+    return {
+        "cost_ticks": cost_ticks,
+        "full_gross_ticks": float(gross.sum()),
+        "full_net_ticks": float(net.sum()),
+        "test_gross_ticks": float(gross[test].sum()),
+        "test_net_ticks": float(net[test].sum()),
+        "test_turnover": float(turnover[test].sum()),
+    }
+
+
+def run(
+    ofi_path: str, bin_events: int, train_frac: float, cost_ticks: float
+) -> Dict[str, object]:
+    bins = load_bins(ofi_path, bin_events, SIGNALS)
     usable = bins.dropna(subset=["fwd_ret"]).reset_index(drop=True)
-
-    # Contemporaneous impact regression on the full sample.
-    contemporaneous = _ols(usable["ret"], usable["ofi"])
-
-    # Predictive regression with a chronological (time-ordered) train/test split.
     split = int(len(usable) * train_frac)
-    train, test = usable.iloc[:split], usable.iloc[split:]
+    present = [s for s in SIGNALS if s in usable.columns]
 
-    predictive_is = _ols(train["fwd_ret"], train["ofi"])
-    # Apply the train-fitted line to the held-out tail (no re-fitting).
-    oos_pred = predictive_is["intercept"] + predictive_is["beta"] * test[
-        "ofi"
-    ].to_numpy(dtype=float)
-    predictive_oos_r2 = _oos_r2(test["fwd_ret"].to_numpy(dtype=float), oos_pred)
+    signals: Dict[str, object] = {}
+    for sig in present:
+        x = usable[sig].to_numpy(dtype=float)
+        ret = usable["ret"].to_numpy(dtype=float)
+        fwd = usable["fwd_ret"].to_numpy(dtype=float)
+
+        contemporaneous = _fit(ret, x)
+        predictive_is = _fit(fwd[:split], x[:split])
+        oos_pred = predictive_is["intercept"] + predictive_is["beta"] * x[split:]
+        predictive_oos_r2 = _oos_r2(fwd[split:], oos_pred)
+        pnl = _pnl(
+            x, fwd, predictive_is["intercept"], predictive_is["beta"], cost_ticks, split
+        )
+
+        signals[sig] = {
+            "contemporaneous": contemporaneous,
+            "predictive_in_sample": predictive_is,
+            "predictive_oos_r_squared": predictive_oos_r2,
+            "pnl": pnl,
+        }
 
     return {
         "params": {
             "bin_events": bin_events,
             "train_frac": train_frac,
+            "cost_ticks": cost_ticks,
             "n_bins": int(len(bins)),
             "n_usable_bins": int(len(usable)),
+            "split_index": split,
         },
-        "contemporaneous": contemporaneous,
-        "predictive_in_sample": predictive_is,
-        "predictive_oos_r_squared": predictive_oos_r2,
-        "bins": usable,  # returned for writing; popped before JSON
+        "signals": signals,
+        "bins": usable,  # popped before JSON
     }
 
 
@@ -134,30 +158,40 @@ def main() -> None:
     parser.add_argument("--ofi", default="data/out/ofi.csv", help="engine ofi.csv")
     parser.add_argument("--bin-events", type=int, default=50)
     parser.add_argument("--train-frac", type=float, default=0.7)
+    parser.add_argument(
+        "--cost-ticks",
+        type=float,
+        default=0.5,
+        help="transaction cost per unit of position turnover",
+    )
     parser.add_argument("--out-bins", default="data/out/bins.csv")
     parser.add_argument("--out-summary", default="data/out/backtest_summary.json")
     args = parser.parse_args()
 
-    result = run(args.ofi, args.bin_events, args.train_frac)
+    result = run(args.ofi, args.bin_events, args.train_frac, args.cost_ticks)
     bins = result.pop("bins")
     bins.to_csv(args.out_bins, index=False)
     with open(args.out_summary, "w") as f:
         json.dump(result, f, indent=2)
 
-    c = result["contemporaneous"]
-    pis = result["predictive_in_sample"]
+    p = result["params"]
     print(
-        f"Bins: {result['params']['n_usable_bins']} usable "
-        f"(size {args.bin_events} events, train_frac {args.train_frac})\n"
+        f"Bins: {p['n_usable_bins']} usable (size {p['bin_events']} events, "
+        f"train_frac {p['train_frac']}, cost {p['cost_ticks']} ticks/turn)\n"
     )
-    print("Contemporaneous   ret_t ~ OFI_t")
-    print(f"  beta={c['beta']:.4e}  t={c['t_stat']:.1f}  R^2={c['r_squared']:.4f}\n")
-    print("Predictive        ret_(t+1) ~ OFI_t")
-    print(
-        f"  in-sample  beta={pis['beta']:.4e}  t={pis['t_stat']:.2f}  "
-        f"R^2={pis['r_squared']:.4f}"
+    header = (
+        f"{'signal':>9} | {'contemp R²':>10} | {'pred OOS R²':>11} | "
+        f"{'test gross':>10} | {'test net':>9}"
     )
-    print(f"  out-of-sample R^2={result['predictive_oos_r_squared']:.4f}")
+    print(header)
+    print("-" * len(header))
+    for sig, m in result["signals"].items():
+        print(
+            f"{sig:>9} | {m['contemporaneous']['r_squared']:>10.4f} | "
+            f"{m['predictive_oos_r_squared']:>11.4f} | "
+            f"{m['pnl']['test_gross_ticks']:>10.1f} | "
+            f"{m['pnl']['test_net_ticks']:>9.1f}"
+        )
     print(f"\nWrote {args.out_bins} and {args.out_summary}")
 
 
