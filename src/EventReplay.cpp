@@ -115,6 +115,27 @@ void write_book_row(std::ostream& out, std::size_t seq, Timestamp ts, const L1& 
     out << '\n';
 }
 
+// Emits the per-event book (L1) and OFI rows for the current book state. Shared
+// by the matching replay and the book-only replay.
+void emit_snapshots(std::size_t seq, Timestamp ts, const OrderBook& book,
+                    OrderFlowImbalance& ofi, std::size_t levels,
+                    std::ostream* book_out, std::ostream* ofi_out) {
+    if (book_out != nullptr) {
+        write_book_row(*book_out, seq, ts, extract_l1(book));
+    }
+    if (ofi_out != nullptr) {
+        std::vector<Price> bid_px, ask_px;
+        std::vector<Quantity> bid_qty, ask_qty;
+        extract_levels(book, levels, Side::Buy, bid_px, bid_qty);
+        extract_levels(book, levels, Side::Sell, ask_px, ask_qty);
+        const OrderFlowImbalance::Sample s = ofi.update(bid_px, bid_qty, ask_px, ask_qty);
+        *ofi_out << seq << ',' << ts << ',';
+        if (std::isnan(s.mid)) *ofi_out << ',';
+        else *ofi_out << s.mid << ',';
+        *ofi_out << s.l1 << ',' << s.deep << ',' << (s.valid ? 1 : 0) << '\n';
+    }
+}
+
 }  // namespace
 
 const char* EventReplay::trades_header() noexcept {
@@ -186,8 +207,6 @@ EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine
     if (ofi_out != nullptr) *ofi_out << ofi_header() << '\n';
 
     OrderFlowImbalance ofi(ofi_levels);
-    std::vector<Price> bid_px, ask_px;
-    std::vector<Quantity> bid_qty, ask_qty;
     Stats stats;
     for (std::size_t seq = 0; seq < events.size(); ++seq) {
         const Event& ev = events[seq];
@@ -220,26 +239,56 @@ EventReplay::Stats EventReplay::replay(std::vector<Event> events, MatchingEngine
             }
         }
 
-        // One L1 snapshot per event, reused for the book CSV and the OFI signal.
-        const L1 l1 = extract_l1(engine.book());
-        if (book_out != nullptr) {
-            write_book_row(*book_out, seq, ev.timestamp, l1);
-        }
-        if (ofi_out != nullptr) {
-            extract_levels(engine.book(), ofi_levels, Side::Buy, bid_px, bid_qty);
-            extract_levels(engine.book(), ofi_levels, Side::Sell, ask_px, ask_qty);
-            const OrderFlowImbalance::Sample s =
-                ofi.update(bid_px, bid_qty, ask_px, ask_qty);
-            *ofi_out << seq << ',' << ev.timestamp << ',';
-            if (std::isnan(s.mid)) *ofi_out << ',';
-            else *ofi_out << s.mid << ',';
-            *ofi_out << s.l1 << ',' << s.deep << ',' << (s.valid ? 1 : 0) << '\n';
-        }
-
+        emit_snapshots(seq, ev.timestamp, engine.book(), ofi, ofi_levels, book_out,
+                       ofi_out);
         stats.trades_generated += trades.size();
     }
     stats.events_processed = events.size();
     stats.executed_volume = engine.executed_volume();
+    return stats;
+}
+
+EventReplay::Stats EventReplay::replay_book_only(std::vector<Event> events,
+                                                 OrderBook& book, std::ostream* book_out,
+                                                 std::ostream* ofi_out,
+                                                 std::size_t ofi_levels) {
+    std::stable_sort(events.begin(), events.end(),
+                     [](const Event& a, const Event& b) {
+                         return a.timestamp < b.timestamp;
+                     });
+
+    if (book_out != nullptr) *book_out << book_header() << '\n';
+    if (ofi_out != nullptr) *ofi_out << ofi_header() << '\n';
+
+    OrderFlowImbalance ofi(ofi_levels);
+    Stats stats;
+    for (std::size_t seq = 0; seq < events.size(); ++seq) {
+        const Event& ev = events[seq];
+        // Messages are already matched upstream (e.g. LOBSTER): apply them
+        // directly to the book, never crossing/matching. Missing-id cancels and
+        // modifies are graceful no-ops, so a no-op event still emits a snapshot
+        // and keeps row alignment with an external reference book.
+        switch (ev.type) {
+            case EventType::Add:
+                if (ev.quantity > 0 && !book.contains(ev.order_id)) {
+                    book.add_limit_order(Order{ev.order_id, ev.side, ev.price,
+                                               ev.quantity, ev.timestamp,
+                                               OrderType::Limit});
+                }
+                break;
+            case EventType::Cancel:
+                book.cancel_order(ev.order_id);
+                break;
+            case EventType::Modify:
+                book.modify_order(ev.order_id, ev.price, ev.quantity);
+                break;
+            case EventType::Market:
+                break;  // not meaningful without matching; ignored
+        }
+
+        emit_snapshots(seq, ev.timestamp, book, ofi, ofi_levels, book_out, ofi_out);
+    }
+    stats.events_processed = events.size();
     return stats;
 }
 

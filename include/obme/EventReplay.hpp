@@ -7,6 +7,7 @@
 
 #include "obme/MatchingEngine.hpp"
 #include "obme/Order.hpp"
+#include "obme/OrderBook.hpp"
 
 namespace obme {
 
@@ -52,6 +53,16 @@ public:
     static Stats replay(std::vector<Event> events, MatchingEngine& engine,
                         std::ostream* trades_out, std::ostream* book_out,
                         std::ostream* ofi_out = nullptr, std::size_t ofi_levels = 5);
+
+    /// Reconstructs the book from an **already-matched** message stream (e.g.
+    /// LOBSTER), applying ADD/CANCEL/MODIFY directly to `book` with no matching,
+    /// and emitting a book (L1) and OFI snapshot after every message. MARKET
+    /// events are ignored (there is nothing to match against). Missing-id
+    /// cancels/modifies are graceful no-ops that still emit a snapshot, so rows
+    /// stay aligned one-to-one with an external reference order book.
+    static Stats replay_book_only(std::vector<Event> events, OrderBook& book,
+                                  std::ostream* book_out, std::ostream* ofi_out = nullptr,
+                                  std::size_t ofi_levels = 5);
 
     /// Column header lines written to each output (also handy for tests).
     static const char* trades_header() noexcept;

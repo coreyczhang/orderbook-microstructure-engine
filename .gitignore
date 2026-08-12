@@ -20,6 +20,7 @@ venv/
 # ---- Data artifacts (regenerated; not checked in) ----
 data/*.csv
 data/out/
+data/lob_out/
 *.parquet
 !data/README.md
 

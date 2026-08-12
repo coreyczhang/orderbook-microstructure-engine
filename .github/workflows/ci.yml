@@ -31,6 +31,18 @@ jobs:
           python3 python/validate.py \
             --engine-book data/out/book.csv --truth data/events_truth_l1.csv
 
+      - name: LOBSTER-format reconstruction (book-only) vs. ground truth
+        run: |
+          python3 python/make_lobster_fixture.py \
+            --out-message data/lob_msg.csv --out-orderbook data/lob_ob.csv \
+            --messages 3000 --seed 7
+          python3 python/lobster_adapter.py \
+            --message data/lob_msg.csv --out data/lob_events.csv \
+            --orderbook data/lob_ob.csv --truth data/lob_truth.csv
+          ./build/engine data/lob_events.csv --out-dir data/lob_out --book-only
+          python3 python/validate.py \
+            --engine-book data/lob_out/book.csv --truth data/lob_truth.csv
+
   python:
     name: Python format check
     runs-on: ubuntu-latest

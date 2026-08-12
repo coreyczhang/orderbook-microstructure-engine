@@ -50,9 +50,17 @@ class ShadowBook:
         book.setdefault(price, deque()).append([order_id, qty])
         self.loc[order_id] = (side, price)
 
-    def _consume(self, opp_side: Side, price: int, remaining: int) -> int:
+    def _consume(
+        self,
+        opp_side: Side,
+        price: int,
+        remaining: int,
+        fills: Optional[List[Tuple[int, Side, int, int]]] = None,
+    ) -> int:
         """Fills ``remaining`` shares against the FIFO at ``price`` on
-        ``opp_side``; returns the still-unfilled remainder."""
+        ``opp_side``; returns the still-unfilled remainder. When ``fills`` is
+        given, appends ``(resting_order_id, opp_side, price, filled_qty)`` for
+        each (partial) execution — used to emit LOBSTER-style type-4 messages."""
         book = self.bids if opp_side == "B" else self.asks
         level = book[price]
         while remaining > 0 and level:
@@ -60,6 +68,8 @@ class ShadowBook:
             fill = min(remaining, head[1])
             head[1] -= fill
             remaining -= fill
+            if fills is not None:
+                fills.append((head[0], opp_side, price, fill))
             if head[1] == 0:
                 del self.loc[head[0]]
                 level.popleft()
@@ -84,15 +94,19 @@ class ShadowBook:
         if remaining > 0:
             self._rest(side, price, order_id, remaining)
 
-    def market(self, side: Side, qty: int) -> None:
+    def market(self, side: Side, qty: int) -> List[Tuple[int, Side, int, int]]:
+        """Consumes ``qty`` shares from the opposite side; returns the list of
+        resting-order fills produced (see ``_consume``). Any unfilled remainder
+        is dropped (a market order never rests)."""
         remaining = qty
+        fills: List[Tuple[int, Side, int, int]] = []
         if side == "B":
             while remaining > 0 and self.asks:
-                remaining = self._consume("S", min(self.asks), remaining)
+                remaining = self._consume("S", min(self.asks), remaining, fills)
         else:
             while remaining > 0 and self.bids:
-                remaining = self._consume("B", max(self.bids), remaining)
-        # A market order never rests; any remainder is dropped.
+                remaining = self._consume("B", max(self.bids), remaining, fills)
+        return fills
 
     def cancel(self, order_id: int) -> bool:
         if order_id not in self.loc:
@@ -108,6 +122,23 @@ class ShadowBook:
             del book[price]
         del self.loc[order_id]
         return True
+
+    def reduce(self, order_id: int, delta: int) -> int:
+        """Partially reduces a resting order by ``delta`` shares (removing it if
+        it hits zero). Returns the remaining size, or 0 if fully removed / absent.
+        Used to model LOBSTER type-2 partial cancellations."""
+        if order_id not in self.loc:
+            return 0
+        _, price = self.loc[order_id]
+        book = self.bids if self.loc[order_id][0] == "B" else self.asks
+        for entry in book[price]:
+            if entry[0] == order_id:
+                entry[1] -= delta
+                if entry[1] <= 0:
+                    self.cancel(order_id)
+                    return 0
+                return entry[1]
+        return 0
 
     def l1(self) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
         bb, ba = self.best_bid(), self.best_ask()

@@ -32,9 +32,11 @@ randomized invariant stress test); the Python layer handles the statistical back
 | M4 | OFI signal (C++) + Python regression/backtest + plots | ✅ done |
 | M5 | Polish: architecture diagram, results write-up, CI | ✅ done |
 
-**Post-M5 enhancements (done):** multi-level (top-*N*) integrated OFI, and a
-transaction-cost-aware backtest comparing L1 vs. deep OFI. **Still open:** real LOBSTER
-data, turnover-aware position sizing, per-level OFI regressors, optional pybind11 bindings.
+**Post-M5 enhancements (done):** multi-level (top-*N*) integrated OFI; a
+transaction-cost-aware backtest comparing L1 vs. deep OFI; and **LOBSTER-format
+reconstruction** (`--book-only` mode + adapter + fixture, CI-verified). **Still open:**
+running on a *real* LOBSTER sample (download is user-gated), turnover-aware position
+sizing, per-level OFI regressors, optional pybind11 bindings.
 See [docs/results.md](docs/results.md#next-steps).
 
 ## Build & test (C++)
@@ -123,8 +125,38 @@ seed so any failure reproduces.
   default 50k-event stream the reconstruction matches on **all 50,000 snapshots** — a
   direct correctness check, not just a smoke test.
 
-Real **LOBSTER** sample data will be adapted to the same event schema in a later pass; the
-synthetic path keeps the whole pipeline reproducible and self-validating in the meantime.
+## Real LOBSTER data (book-only reconstruction)
+
+The engine also reconstructs **real exchange data** in [LOBSTER](https://lobsterdata.com)
+format. LOBSTER's message stream is *already matched* — incoming marketable orders appear
+as executions against resting orders, not as flow to re-match — so the engine reconstructs
+it with `--book-only` (applying ADD/CANCEL/MODIFY directly to the book, no matching):
+
+- **`lobster_adapter.py`** translates a LOBSTER `message` file into this project's event
+  schema (one event per message; hidden/cross/halt messages become no-ops that preserve
+  row alignment) and converts the paired `orderbook` file into a ground-truth L1 CSV.
+- **`engine --book-only`** reconstructs the book and emits `book.csv` + `ofi.csv`.
+- **`validate.py`** then confirms the reconstruction matches LOBSTER's own order book,
+  row for row.
+
+Because LOBSTER now gates its free samples behind a request/approval form, the repo ships
+**`make_lobster_fixture.py`**, which emits a faithful LOBSTER-format message+orderbook pair
+(driven by the shadow book, so it is correct by construction). This proves the adapter and
+book-only reconstruction end-to-end — and is checked in CI — **with no proprietary data**:
+
+```bash
+# Prove the LOBSTER path on a self-contained fixture (matches on all snapshots)
+python python/make_lobster_fixture.py --out-message data/lob_msg.csv \
+    --out-orderbook data/lob_ob.csv --messages 3000 --seed 7
+python python/lobster_adapter.py --message data/lob_msg.csv --out data/lob_events.csv \
+    --orderbook data/lob_ob.csv --truth data/lob_truth.csv
+./build/engine data/lob_events.csv --out-dir data/lob_out --book-only
+python python/validate.py --engine-book data/lob_out/book.csv --truth data/lob_truth.csv
+```
+
+To use a **real** LOBSTER sample, request it from lobsterdata.com, then run the same
+`lobster_adapter.py` → `engine --book-only` → `validate.py` steps on the downloaded
+`*_message_*.csv` and `*_orderbook_*.csv` files.
 
 ## Order flow imbalance & methodology (M4)
 
@@ -187,8 +219,8 @@ suspiciously clean predictive edge would be a red flag, not a feature.
 
 ## Testing
 
-- **62 GoogleTest cases** across the order book, matching engine, replay/parse, and OFI
-  (including multi-level OFI).
+- **64 GoogleTest cases** across the order book, matching engine, replay/parse, OFI
+  (including multi-level OFI), and book-only reconstruction.
 - A **randomized invariant stress test**: 20,000 pseudo-random events (fixed seed), with
   structural invariants, a never-crossed book, and per-operation share conservation
   checked after *every* operation.

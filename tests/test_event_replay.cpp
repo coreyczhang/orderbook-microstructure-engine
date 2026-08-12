@@ -137,6 +137,53 @@ TEST(EventReplay, ReplayEmitsOfiColumnPerEvent) {
     EXPECT_NE(last.find(",-5,-5,1"), std::string::npos);
 }
 
+TEST(EventReplay, BookOnlyAppliesDirectlyWithoutMatching) {
+    // In book-only mode a "crossing" add does NOT trade — it just rests, so the
+    // book is allowed to be crossed (this is already-matched message data).
+    std::istringstream in(
+        "timestamp,event_type,order_id,side,price,quantity\n"
+        "1,ADD,1,S,100,10\n"
+        "2,ADD,2,B,101,5\n");  // would cross under matching; here it just rests
+    std::vector<Event> events = EventReplay::parse(in);
+
+    OrderBook book;
+    std::ostringstream book_out;
+    const EventReplay::Stats stats =
+        EventReplay::replay_book_only(std::move(events), book, &book_out, nullptr);
+
+    EXPECT_EQ(stats.events_processed, 2u);
+    EXPECT_EQ(stats.trades_generated, 0u);  // book-only never trades
+    ASSERT_TRUE(book.has_best_bid());
+    ASSERT_TRUE(book.has_best_ask());
+    EXPECT_EQ(book.best_bid(), 101);        // both orders rest -> crossed book
+    EXPECT_EQ(book.best_ask(), 100);
+    EXPECT_EQ(book.order_count(), 2u);
+}
+
+TEST(EventReplay, BookOnlyModifyReducesAndNoopsEmitRows) {
+    std::istringstream in(
+        "1,ADD,1,B,100,10\n"
+        "2,MODIFY,1,B,100,4\n"   // reduce in place
+        "3,CANCEL,999,B,0,0\n"   // missing id -> no-op, still emits a row
+        "4,CANCEL,1,B,0,0\n");   // remove the order
+    std::vector<Event> events = EventReplay::parse(in);
+
+    OrderBook book;
+    std::ostringstream book_out;
+    EventReplay::replay_book_only(std::move(events), book, &book_out, nullptr);
+
+    // 4 events -> header + 4 rows, preserving one-to-one alignment.
+    std::istringstream book_in(book_out.str());
+    std::string line;
+    std::getline(book_in, line);  // header
+    int rows = 0;
+    while (std::getline(book_in, line)) {
+        if (!line.empty()) ++rows;
+    }
+    EXPECT_EQ(rows, 4);
+    EXPECT_EQ(book.order_count(), 0u);  // finally cancelled
+}
+
 TEST(EventReplay, ReplayStableSortsByTimestamp) {
     // Deliberately out-of-order timestamps; replay must process 1 then 2.
     std::istringstream in(

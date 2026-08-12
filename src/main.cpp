@@ -11,11 +11,16 @@
 namespace {
 
 void print_usage(const char* argv0) {
-    std::cerr << "Usage: " << argv0 << " <events.csv> [--out-dir DIR] [--ofi-levels N]\n\n"
-              << "Replays a tick-level event stream through the matching engine and\n"
-              << "writes trades.csv, book.csv (top-of-book snapshots) and ofi.csv to DIR\n"
-              << "(default: current directory). --ofi-levels sets the depth of the\n"
-              << "integrated OFI signal (default 5).\n";
+    std::cerr
+        << "Usage: " << argv0
+        << " <events.csv> [--out-dir DIR] [--ofi-levels N] [--book-only]\n\n"
+        << "Replays a tick-level event stream and writes book.csv (top-of-book\n"
+        << "snapshots) and ofi.csv to DIR (default: current directory), plus\n"
+        << "trades.csv in matching mode. --ofi-levels sets the depth of the\n"
+        << "integrated OFI signal (default 5).\n\n"
+        << "--book-only applies ADD/CANCEL/MODIFY directly to the book without\n"
+        << "matching, for already-matched message data such as LOBSTER (no\n"
+        << "trades.csv is produced).\n";
 }
 
 }  // namespace
@@ -24,6 +29,7 @@ int main(int argc, char** argv) {
     std::string events_path;
     std::filesystem::path out_dir = ".";
     std::size_t ofi_levels = 5;
+    bool book_only = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -31,7 +37,9 @@ int main(int argc, char** argv) {
             print_usage(argv[0]);
             return 0;
         }
-        if (arg == "--out-dir") {
+        if (arg == "--book-only") {
+            book_only = true;
+        } else if (arg == "--out-dir") {
             if (i + 1 >= argc) {
                 std::cerr << "error: --out-dir requires a directory argument\n";
                 return 2;
@@ -82,19 +90,36 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        const std::filesystem::path trades_path = out_dir / "trades.csv";
         const std::filesystem::path book_path = out_dir / "book.csv";
         const std::filesystem::path ofi_path = out_dir / "ofi.csv";
-        std::ofstream trades_out(trades_path);
         std::ofstream book_out(book_path);
         std::ofstream ofi_out(ofi_path);
-        if (!trades_out || !book_out || !ofi_out) {
+        if (!book_out || !ofi_out) {
             std::cerr << "error: cannot open output files in '" << out_dir.string()
                       << "'\n";
             return 1;
         }
 
         std::vector<obme::Event> events = obme::EventReplay::parse(in);
+
+        if (book_only) {
+            obme::OrderBook book;
+            const obme::EventReplay::Stats stats = obme::EventReplay::replay_book_only(
+                std::move(events), book, &book_out, &ofi_out, ofi_levels);
+            std::cout << "Reconstructed " << stats.events_processed
+                      << " messages (book-only, no matching).\n"
+                      << "Wrote " << book_path.string() << " and " << ofi_path.string()
+                      << "\n";
+            return 0;
+        }
+
+        const std::filesystem::path trades_path = out_dir / "trades.csv";
+        std::ofstream trades_out(trades_path);
+        if (!trades_out) {
+            std::cerr << "error: cannot open output files in '" << out_dir.string()
+                      << "'\n";
+            return 1;
+        }
         obme::MatchingEngine engine;
         const obme::EventReplay::Stats stats = obme::EventReplay::replay(
             std::move(events), engine, &trades_out, &book_out, &ofi_out, ofi_levels);

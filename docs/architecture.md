@@ -61,18 +61,20 @@ that proves the reconstruction is exact.
 | [`PriceLevel`](../include/obme/PriceLevel.hpp) | FIFO queue of orders at one price | **Intrusive doubly linked list + `id→node` map** → O(1) append, O(1) cancel; `unique_ptr` node ownership |
 | [`OrderBook`](../include/obme/OrderBook.hpp) | Two-sided book, resting-order maintenance | `std::map` per side (best at `begin()`); `id→(side,price)` index; `check_invariants()` self-test |
 | [`MatchingEngine`](../include/obme/MatchingEngine.hpp) | Cross incoming orders against the book | Price-time priority; partial fills; market orders; modify = in-place decrease or cancel+re-submit |
-| [`EventReplay`](../include/obme/EventReplay.hpp) | Parse + replay an event stream | Header-aware CSV parse; stable-sort by timestamp; streams trades / L1 book / OFI |
+| [`EventReplay`](../include/obme/EventReplay.hpp) | Parse + replay an event stream | Header-aware CSV parse; stable-sort by timestamp; streams trades / L1 book / OFI. `replay_book_only` applies messages directly (no matching) for pre-matched data like LOBSTER |
 | [`OrderFlowImbalance`](../include/obme/OrderFlowImbalance.hpp) | Per-event OFI from top-of-book updates | Cont–Kukanov–Stoikov; best-level (L1) **and** integrated top-`N` "deep" OFI; gates on a two-sided book |
-| [`engine` CLI](../src/main.cpp) | `engine <events.csv> --out-dir DIR` | Writes `trades.csv`, `book.csv`, `ofi.csv` |
+| [`engine` CLI](../src/main.cpp) | `engine <events.csv> --out-dir DIR [--ofi-levels N] [--book-only]` | Writes `trades.csv`, `book.csv`, `ofi.csv` (`--book-only` skips matching + trades) |
 
 ### Python layer (`python/`)
 
 | Script | Responsibility |
 |--------|----------------|
 | [`generate_synthetic.py`](../python/generate_synthetic.py) | Poisson order-flow generator with a shadow price-time book; emits events + ground-truth L1 |
-| [`validate.py`](../python/validate.py) | Diffs engine `book.csv` against generator ground truth (row for row) |
-| [`backtest.py`](../python/backtest.py) | Event-time binning; contemporaneous + forward-return OLS; chronological train/test split |
-| [`plots.py`](../python/plots.py) | OFI-vs-return scatter and cumulative signal PnL vs. baseline |
+| [`validate.py`](../python/validate.py) | Diffs engine `book.csv` against ground truth (row for row) — used for both synthetic and LOBSTER paths |
+| [`backtest.py`](../python/backtest.py) | Event-time binning; contemporaneous + forward-return OLS; chronological train/test split; cost-aware PnL |
+| [`plots.py`](../python/plots.py) | OFI-vs-return scatter and cumulative signal PnL (gross/net) vs. baseline |
+| [`lobster_adapter.py`](../python/lobster_adapter.py) | LOBSTER message file → event schema; LOBSTER orderbook file → ground-truth L1 |
+| [`make_lobster_fixture.py`](../python/make_lobster_fixture.py) | Emits a faithful LOBSTER-format message+orderbook fixture (shadow-book driven) to prove the book-only path without proprietary data |
 
 ## Why `std::map` (and how to go faster)
 
