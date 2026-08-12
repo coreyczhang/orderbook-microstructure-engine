@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cxx:
+    name: Build, test & pipeline smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Pipeline smoke test (reconstruction vs. ground truth)
+        run: |
+          python3 python/generate_synthetic.py \
+            --out data/events.csv --truth data/events_truth_l1.csv \
+            --events 20000 --seed 7
+          ./build/engine data/events.csv --out-dir data/out
+          python3 python/validate.py \
+            --engine-book data/out/book.csv --truth data/events_truth_l1.csv
+
+  python:
+    name: Python format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install black
+        run: pip install black
+
+      - name: Check formatting
+        run: black --check python/

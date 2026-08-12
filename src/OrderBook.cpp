@@ -162,9 +162,9 @@ bool OrderBook::price_at_level(Side side, std::size_t level, Price& out) const {
 Quantity OrderBook::total_shares(Side side) const {
     Quantity total = 0;
     if (side == Side::Buy) {
-        for (const auto& [price, level] : bids_) total += level.total_quantity();
+        for (const auto& entry : bids_) total += entry.second.total_quantity();
     } else {
-        for (const auto& [price, level] : asks_) total += level.total_quantity();
+        for (const auto& entry : asks_) total += entry.second.total_quantity();
     }
     return total;
 }
@@ -172,11 +172,11 @@ Quantity OrderBook::total_shares(Side side) const {
 std::vector<Order> OrderBook::snapshot() const {
     std::vector<Order> out;
     out.reserve(locations_.size());
-    for (const auto& [price, level] : bids_) {
-        for (const Order& o : level.snapshot()) out.push_back(o);
+    for (const auto& entry : bids_) {
+        for (const Order& o : entry.second.snapshot()) out.push_back(o);
     }
-    for (const auto& [price, level] : asks_) {
-        for (const Order& o : level.snapshot()) out.push_back(o);
+    for (const auto& entry : asks_) {
+        for (const Order& o : entry.second.snapshot()) out.push_back(o);
     }
     return out;
 }

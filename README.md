@@ -1,13 +1,14 @@
 # Order Book Microstructure Engine
 
+[![CI](https://github.com/coreyczhang/orderbook-microstructure-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/coreyczhang/orderbook-microstructure-engine/actions/workflows/ci.yml)
+
 A limit order book (LOB) reconstruction and matching engine written in modern C++,
 paired with a Python layer that computes an **Order Flow Imbalance (OFI)** signal and
 backtests its short-horizon predictive power. Built as a portfolio project exploring
 market-microstructure research on **public data only**.
 
-> **Status:** work in progress. This README grows milestone by milestone.
-> Currently implemented: **M1 — core data structures**, **M2 — matching engine**,
-> **M3 — event replay + synthetic data pipeline**, and **M4 — OFI signal + backtest**.
+See **[docs/architecture.md](docs/architecture.md)** for the component and data-flow
+diagram, and **[docs/results.md](docs/results.md)** for the backtest write-up.
 
 ---
 
@@ -29,7 +30,10 @@ randomized invariant stress test); the Python layer handles the statistical back
 | M2 | Matching engine: price-time priority, partial fills, market orders, trades | ✅ done |
 | M3 | Event replay + synthetic data pipeline (CSV) + ground-truth validation | ✅ done |
 | M4 | OFI signal (C++) + Python regression/backtest + plots | ✅ done |
-| M5 | Polish: full write-up, architecture diagram, CI | ⏳ planned |
+| M5 | Polish: architecture diagram, results write-up, CI | ✅ done |
+
+**Next (post-M5):** swap in real LOBSTER data, add a transaction-cost model, extend OFI to
+the top *N* levels, and (optionally) pybind11 bindings. See [docs/results.md](docs/results.md#next-steps).
 
 ## Build & test (C++)
 
@@ -169,6 +173,31 @@ modeled**, that mixed/negative result is the honest and expected outcome; a susp
 clean predictive edge would be a red flag. The signal-following PnL curve
 ([docs/pnl.png](docs/pnl.png)) looks profitable *gross of costs*, but the per-bin edge is
 far below a realistic half-spread — see the caveats in the results doc.
+
+## Testing
+
+- **59 GoogleTest cases** across the order book, matching engine, replay/parse, and OFI.
+- A **randomized invariant stress test**: 20,000 pseudo-random events (fixed seed), with
+  structural invariants, a never-crossed book, and per-operation share conservation
+  checked after *every* operation.
+- A **ground-truth reconstruction check**: the engine's rebuilt book is diffed against the
+  synthetic generator's shadow book and matches on all 50,000 top-of-book snapshots.
+- **CI** (GitHub Actions) builds, runs the tests, runs an end-to-end pipeline smoke test,
+  and enforces `black` formatting on every push.
+
+Build is clean under `-Wall -Wextra -Wpedantic`; no raw `new`/`delete` (RAII throughout).
+
+## Project layout
+
+```
+include/obme/   public headers (Order, PriceLevel, OrderBook, MatchingEngine,
+                EventReplay, OrderFlowImbalance, Trade)
+src/            implementations + engine CLI (main.cpp)
+tests/          GoogleTest suites (unit + randomized stress)
+python/         generator, validator, backtest, plots, requirements.txt
+docs/           architecture.md, results.md, result figures
+data/           inputs & engine outputs (git-ignored; regenerated)
+```
 
 ## Disclaimer
 
