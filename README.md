@@ -34,9 +34,9 @@ randomized invariant stress test); the Python layer handles the statistical back
 
 **Post-M5 enhancements (done):** multi-level (top-*N*) integrated OFI; a
 transaction-cost-aware backtest comparing L1 vs. deep OFI; and **LOBSTER-format
-reconstruction** (`--book-only` mode + adapter + fixture, CI-verified). **Still open:**
-running on a *real* LOBSTER sample (download is user-gated), turnover-aware position
-sizing, per-level OFI regressors, optional pybind11 bindings.
+reconstruction** (`--book-only` mode + adapter + fixture, CI-verified). Plus **turnover-aware dead-band
+sizing** in the cost-aware backtest. **Still open:** running on a *real* LOBSTER sample
+(download is user-gated), per-level OFI regressors, optional pybind11 bindings.
 See [docs/results.md](docs/results.md#next-steps).
 
 ## Build & test (C++)
@@ -210,9 +210,12 @@ Three honest findings:
 2. **Predictive power is weak and reverses sign** (β < 0) — OFI slightly *negatively*
    forecasts the next bin (transient impact / mean reversion); OOS R² stays ≈ 3–6%,
    significant only because N is large.
-3. **The edge does not survive costs.** Both signals are profitable *gross* but the
-   sign-flipping strategy turns over almost every bin; at 0.5 tick/turn, **net PnL is
-   firmly negative** ([docs/pnl.png](docs/pnl.png)).
+3. **The edge does not survive costs — and a turnover throttle recovers most, not all, of
+   it.** Both signals are profitable *gross*, but the flip-every-bin strategy turns over
+   almost every bin; at 0.5 tick/turn **net PnL is firmly negative** (L1 −123.5, deep
+   −82.5). A **train-tuned hysteresis dead-band** cuts L1 turnover ~89% and lifts net to
+   −4.5 (near break-even), deep to −15.5 — still negative ([docs/pnl.png](docs/pnl.png)).
+   Throttling turnover removes cost drag; it doesn't manufacture alpha.
 
 On frictionless synthetic data that mixed result is the honest, expected outcome — a
 suspiciously clean predictive edge would be a red flag, not a feature.

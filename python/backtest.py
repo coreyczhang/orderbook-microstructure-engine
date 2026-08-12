@@ -10,9 +10,12 @@ Stoikov (2014):
   ``--train-frac`` of bins (chronological, never shuffled) and evaluated on the
   held-out tail.
 
-It also runs a **transaction-cost-aware PnL**: a position ``sign(â + b̂·OFI)``
-from the train fit, charged ``--cost-ticks`` per unit of turnover, so the
-reported net PnL reflects whether any edge survives the spread.
+It also runs a **transaction-cost-aware PnL**: a position from the train-fitted
+line, charged ``--cost-ticks`` per unit of turnover. Two position rules are
+compared — the naive flip-every-bin ``sign(â + b̂·OFI)`` and a **hysteresis
+dead-band** whose width is tuned on the training window only — so the net PnL
+shows both whether any edge survives the spread and how much a turnover throttle
+recovers.
 
 The OLS is implemented directly on ``numpy`` — no heavyweight stats dependency.
 Writes ``bins.csv`` (for plotting) and ``backtest_summary.json`` (metrics).
@@ -85,19 +88,27 @@ def _oos_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 
 
-def _pnl(
-    signal: np.ndarray,
-    fwd: np.ndarray,
-    a: float,
-    b: float,
-    cost_ticks: float,
-    split: int,
+def positions(pred: np.ndarray, band: float) -> np.ndarray:
+    """Hysteresis position rule: go long when ``pred > band``, short when
+    ``pred < -band``, otherwise **hold** the current position. ``band == 0``
+    reduces to ``sign(pred)`` (flip every bin). A wider band trades less."""
+    pos = np.zeros(len(pred))
+    cur = 0.0
+    for i in range(len(pred)):
+        p = pred[i]
+        if p > band:
+            cur = 1.0
+        elif p < -band:
+            cur = -1.0
+        pos[i] = cur
+    return pos
+
+
+def _pnl_from_positions(
+    pos: np.ndarray, fwd: np.ndarray, cost_ticks: float, split: int
 ) -> Dict[str, float]:
-    """Cost-aware PnL of trading position = sign(a + b*signal). Turnover is the
-    absolute position change; each unit is charged ``cost_ticks``."""
-    position = np.sign(a + b * signal)
-    turnover = np.abs(np.diff(position, prepend=0.0))
-    gross = position * fwd
+    turnover = np.abs(np.diff(pos, prepend=0.0))
+    gross = pos * fwd
     net = gross - cost_ticks * turnover
     test = slice(split, None)
     return {
@@ -108,6 +119,44 @@ def _pnl(
         "test_net_ticks": float(net[test].sum()),
         "test_turnover": float(turnover[test].sum()),
     }
+
+
+def _pnl(
+    signal: np.ndarray,
+    fwd: np.ndarray,
+    a: float,
+    b: float,
+    cost_ticks: float,
+    split: int,
+) -> Dict[str, float]:
+    """Cost-aware PnL of the plain ``sign(a + b*signal)`` rule (no dead-band)."""
+    return _pnl_from_positions(positions(a + b * signal, 0.0), fwd, cost_ticks, split)
+
+
+def _select_deadband(
+    pred: np.ndarray, fwd: np.ndarray, cost_ticks: float, split: int
+) -> Dict[str, float]:
+    """Chooses the dead-band (as a multiple of the train-set predicted-return
+    std) that maximizes **train** net PnL, then reports its metrics — so the
+    threshold is a hyperparameter tuned only on the training window, never on the
+    held-out test set."""
+    sigma = float(np.std(pred[:split])) or 1.0
+    best: Dict[str, float] = {}
+    best_train = -np.inf
+    for k in (0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0):
+        band = k * sigma
+        pos = positions(pred, band)
+        turnover = np.abs(np.diff(pos, prepend=0.0))
+        train_net = float(
+            (pos[:split] * fwd[:split]).sum() - cost_ticks * turnover[:split].sum()
+        )
+        if train_net > best_train:
+            best_train = train_net
+            best = _pnl_from_positions(pos, fwd, cost_ticks, split)
+            best["band_sigmas"] = k
+            best["band"] = band
+            best["train_net_ticks"] = train_net
+    return best
 
 
 def run(
@@ -128,15 +177,18 @@ def run(
         predictive_is = _fit(fwd[:split], x[:split])
         oos_pred = predictive_is["intercept"] + predictive_is["beta"] * x[split:]
         predictive_oos_r2 = _oos_r2(fwd[split:], oos_pred)
-        pnl = _pnl(
-            x, fwd, predictive_is["intercept"], predictive_is["beta"], cost_ticks, split
-        )
+
+        a, b = predictive_is["intercept"], predictive_is["beta"]
+        pred = a + b * x
+        pnl = _pnl_from_positions(positions(pred, 0.0), fwd, cost_ticks, split)
+        pnl_deadband = _select_deadband(pred, fwd, cost_ticks, split)
 
         signals[sig] = {
             "contemporaneous": contemporaneous,
             "predictive_in_sample": predictive_is,
             "predictive_oos_r_squared": predictive_oos_r2,
             "pnl": pnl,
+            "pnl_deadband": pnl_deadband,
         }
 
     return {
@@ -181,17 +233,28 @@ def main() -> None:
     )
     header = (
         f"{'signal':>9} | {'contemp R²':>10} | {'pred OOS R²':>11} | "
-        f"{'test gross':>10} | {'test net':>9}"
+        f"{'net (flip)':>10} | {'net (band)':>10} | {'band σ':>6} | {'turn↓':>6}"
     )
     print(header)
     print("-" * len(header))
     for sig, m in result["signals"].items():
+        db = m["pnl_deadband"]
+        turn_ratio = (
+            db["test_turnover"] / m["pnl"]["test_turnover"]
+            if m["pnl"]["test_turnover"]
+            else float("nan")
+        )
         print(
             f"{sig:>9} | {m['contemporaneous']['r_squared']:>10.4f} | "
             f"{m['predictive_oos_r_squared']:>11.4f} | "
-            f"{m['pnl']['test_gross_ticks']:>10.1f} | "
-            f"{m['pnl']['test_net_ticks']:>9.1f}"
+            f"{m['pnl']['test_net_ticks']:>10.1f} | "
+            f"{db['test_net_ticks']:>10.1f} | "
+            f"{db['band_sigmas']:>6.2f} | {turn_ratio:>6.2f}"
         )
+    print(
+        "\n(net = test-set PnL in ticks; 'flip' trades every bin, 'band' uses a "
+        "train-tuned dead-band; turn↓ = band/flip turnover ratio)"
+    )
     print(f"\nWrote {args.out_bins} and {args.out_summary}")
 
 

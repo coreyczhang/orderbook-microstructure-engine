@@ -63,14 +63,24 @@ def make_scatter(bins: pd.DataFrame, out_path: str, signal: str) -> None:
     plt.close(fig)
 
 
-def _cum_pnl(
-    signal: np.ndarray, fwd: np.ndarray, a: float, b: float, cost: float
-) -> tuple[np.ndarray, np.ndarray]:
-    position = np.sign(a + b * signal)
-    turnover = np.abs(np.diff(position, prepend=0.0))
-    gross = np.cumsum(position * fwd)
-    net = np.cumsum(position * fwd - cost * turnover)
-    return gross, net
+def _hysteresis_positions(pred: np.ndarray, band: float) -> np.ndarray:
+    """Mirror of backtest.positions: long above +band, short below -band, else
+    hold. Kept in sync so the plotted PnL matches the reported metrics."""
+    pos = np.zeros(len(pred))
+    cur = 0.0
+    for i in range(len(pred)):
+        p = pred[i]
+        if p > band:
+            cur = 1.0
+        elif p < -band:
+            cur = -1.0
+        pos[i] = cur
+    return pos
+
+
+def _cum(pos: np.ndarray, fwd: np.ndarray, cost: float) -> np.ndarray:
+    turnover = np.abs(np.diff(pos, prepend=0.0))
+    return np.cumsum(pos * fwd - cost * turnover)
 
 
 def make_pnl(bins: pd.DataFrame, summary: dict, out_path: str) -> None:
@@ -87,15 +97,22 @@ def make_pnl(bins: pd.DataFrame, summary: dict, out_path: str) -> None:
             continue
         a = metrics["predictive_in_sample"]["intercept"]
         b = metrics["predictive_in_sample"]["beta"]
-        gross, net = _cum_pnl(bins[sig].to_numpy(dtype=float), fwd, a, b, cost)
+        pred = a + b * bins[sig].to_numpy(dtype=float)
         c = colors.get(sig, None)
-        ax.plot(gross, label=f"{sig} gross", lw=1.3, color=c, alpha=0.45)
-        ax.plot(net, label=f"{sig} net (cost={cost})", lw=1.7, color=c)
+        # Flip-every-bin net (band 0) vs. the train-tuned dead-band net.
+        net_flip = _cum(_hysteresis_positions(pred, 0.0), fwd, cost)
+        band = metrics["pnl_deadband"]["band"]
+        ks = metrics["pnl_deadband"]["band_sigmas"]
+        net_band = _cum(_hysteresis_positions(pred, band), fwd, cost)
+        ax.plot(net_flip, label=f"{sig} net, flip", lw=1.2, color=c, alpha=0.45)
+        ax.plot(net_band, label=f"{sig} net, band={ks:g}σ", lw=1.8, color=c)
 
     ax.axvline(split, color="crimson", ls="--", lw=1, label="train/test split")
-    ax.set_title("Cumulative PnL (ticks) — OFI signals gross vs net vs baseline")
+    ax.set_title(
+        f"Cumulative net PnL (ticks, cost={cost}) — flip-every-bin vs. dead-band"
+    )
     ax.set_xlabel("bin index (time order)")
-    ax.set_ylabel("cumulative PnL (ticks)")
+    ax.set_ylabel("cumulative net PnL (ticks)")
     ax.legend(loc="best", fontsize=8, ncol=2)
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
