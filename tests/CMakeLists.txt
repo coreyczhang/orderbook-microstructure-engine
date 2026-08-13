@@ -18,6 +18,7 @@ add_executable(obme_tests
     test_invariants.cpp
     test_event_replay.cpp
     test_ofi.cpp
+    test_flat_array_book.cpp
 )
 target_link_libraries(obme_tests PRIVATE obme obme_warnings GTest::gtest_main)
 

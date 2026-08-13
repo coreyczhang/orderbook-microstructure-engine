@@ -35,9 +35,10 @@ randomized invariant stress test); the Python layer handles the statistical back
 **Post-M5 enhancements (done):** multi-level (top-*N*) integrated OFI; a
 transaction-cost-aware backtest comparing L1 vs. deep OFI; and **LOBSTER-format
 reconstruction** (`--book-only` mode + adapter + fixture, CI-verified). Plus **turnover-aware dead-band
-sizing** in the cost-aware backtest. **Still open:** running on a *real* LOBSTER sample
-(download is user-gated), per-level OFI regressors, optional pybind11 bindings.
-See [docs/results.md](docs/results.md#next-steps).
+sizing** in the cost-aware backtest, and a **flat-array order book + throughput
+benchmark** (see [Performance](#performance)). **Still open:** running on a *real* LOBSTER
+sample (download is user-gated), per-level OFI regressors, a pooled node allocator,
+optional pybind11 bindings. See [docs/results.md](docs/results.md#next-steps).
 
 ## Build & test (C++)
 
@@ -86,9 +87,9 @@ implemented directly on numpy, so no heavyweight stats package is required.
   cancel-by-id (a plain queue would make cancellation O(n)).
 - **`OrderBook`** keeps bids and asks as `std::map<Price, PriceLevel>` (sorted, so the
   best price is at `begin()`), plus an `order_id → (side, price)` index so cancels and
-  modifies locate their level directly. A production-latency version would replace the
-  tree with a flat array of price levels over a bounded price range — noted here as a
-  deliberate follow-up.
+  modifies locate their level directly. For a bounded price band, `FlatArrayBook` is the
+  production-latency variant — a flat `std::vector<PriceLevel>` indexed by
+  `price − min_price` for O(1) level access (see [Performance](#performance)).
 - **RAII throughout:** node ownership lives in `std::unique_ptr`; no raw `new`/`delete`.
 
 ## Matching engine (M2)
@@ -220,10 +221,27 @@ Three honest findings:
 On frictionless synthetic data that mixed result is the honest, expected outcome — a
 suspiciously clean predictive edge would be a red flag, not a feature.
 
+## Performance
+
+A Release-build benchmark (`obme_bench`) over 2M operations, best of 3 (machine-dependent
+— Apple M-series, AppleClang `-O3`):
+
+| Benchmark | Throughput |
+|-----------|-----------:|
+| MatchingEngine end-to-end (submit/cancel/modify + matching) | **~3 M events/s** (~300 ns/event) |
+| Resting book — `std::map` `OrderBook`, ~8k-level book | ~0.6 M ops/s |
+| Resting book — `FlatArrayBook` (flat array), ~8k-level book | ~0.8 M ops/s (**~1.3–1.4×**) |
+
+The flat-array book wins more as the book widens (O(1) index vs. `std::map`'s O(log L) over
+scattered nodes); both are allocation-bound at ~1 M live orders, so a pooled node allocator
+is the clear next optimization. Full methodology and an honest bottleneck analysis:
+**[docs/benchmarks.md](docs/benchmarks.md)**.
+
 ## Testing
 
-- **64 GoogleTest cases** across the order book, matching engine, replay/parse, OFI
-  (including multi-level OFI), and book-only reconstruction.
+- **66 GoogleTest cases** across the order book, matching engine, replay/parse, OFI
+  (including multi-level OFI), book-only reconstruction, and the flat-array book (a
+  30k-op parity cross-check against the `std::map` book).
 - A **randomized invariant stress test**: 20,000 pseudo-random events (fixed seed), with
   structural invariants, a never-crossed book, and per-operation share conservation
   checked after *every* operation.

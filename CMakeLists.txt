@@ -30,6 +30,7 @@ add_library(obme
     src/MatchingEngine.cpp
     src/EventReplay.cpp
     src/OrderFlowImbalance.cpp
+    src/FlatArrayBook.cpp
 )
 target_include_directories(obme PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(obme PRIVATE obme_warnings)
@@ -37,6 +38,10 @@ target_link_libraries(obme PRIVATE obme_warnings)
 # ---- CLI: replay an event file, emit trades.csv + book.csv -----------------
 add_executable(engine src/main.cpp)
 target_link_libraries(engine PRIVATE obme obme_warnings)
+
+# ---- Benchmarks (build Release for meaningful numbers) ---------------------
+add_executable(obme_bench src/bench_main.cpp)
+target_link_libraries(obme_bench PRIVATE obme obme_warnings)
 
 # ---- Tests -----------------------------------------------------------------
 if(OBME_BUILD_TESTS)

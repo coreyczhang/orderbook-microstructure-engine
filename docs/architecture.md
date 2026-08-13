@@ -60,6 +60,7 @@ that proves the reconstruction is exact.
 | [`Order`](../include/obme/Order.hpp) | One order (id, side, price, qty, ts, type) | Value type; integer ticks/shares; **signed** quantity so over-fills are catchable |
 | [`PriceLevel`](../include/obme/PriceLevel.hpp) | FIFO queue of orders at one price | **Intrusive doubly linked list + `id→node` map** → O(1) append, O(1) cancel; `unique_ptr` node ownership |
 | [`OrderBook`](../include/obme/OrderBook.hpp) | Two-sided book, resting-order maintenance | `std::map` per side (best at `begin()`); `id→(side,price)` index; `check_invariants()` self-test |
+| [`FlatArrayBook`](../include/obme/FlatArrayBook.hpp) | Cache-friendly book over a **bounded** price band | `std::vector<PriceLevel>` indexed by `price − min` → O(1) level access; best tracked as an index; ~1.3× the map book on a wide book (see [benchmarks](benchmarks.md)) |
 | [`MatchingEngine`](../include/obme/MatchingEngine.hpp) | Cross incoming orders against the book | Price-time priority; partial fills; market orders; modify = in-place decrease or cancel+re-submit |
 | [`EventReplay`](../include/obme/EventReplay.hpp) | Parse + replay an event stream | Header-aware CSV parse; stable-sort by timestamp; streams trades / L1 book / OFI. `replay_book_only` applies messages directly (no matching) for pre-matched data like LOBSTER |
 | [`OrderFlowImbalance`](../include/obme/OrderFlowImbalance.hpp) | Per-event OFI from top-of-book updates | Cont–Kukanov–Stoikov; best-level (L1) **and** integrated top-`N` "deep" OFI; gates on a two-sided book |
