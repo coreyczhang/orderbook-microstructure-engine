@@ -43,6 +43,9 @@ target_link_libraries(engine PRIVATE obme obme_warnings)
 add_executable(obme_bench src/bench_main.cpp)
 target_link_libraries(obme_bench PRIVATE obme obme_warnings)
 
+# ---- Market-making simulator (event-driven, HFT-style) ---------------------
+add_subdirectory(simulator)
+
 # ---- Tests -----------------------------------------------------------------
 if(OBME_BUILD_TESTS)
     enable_testing()

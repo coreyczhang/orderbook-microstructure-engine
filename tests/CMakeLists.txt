@@ -19,7 +19,10 @@ add_executable(obme_tests
     test_event_replay.cpp
     test_ofi.cpp
     test_flat_array_book.cpp
+    test_simulator.cpp
 )
-target_link_libraries(obme_tests PRIVATE obme obme_warnings GTest::gtest_main)
+# obme_sim links obme PUBLIC, so obme is available transitively (listing it
+# again here would put libobme.a on the link line twice).
+target_link_libraries(obme_tests PRIVATE obme_sim obme_warnings GTest::gtest_main)
 
 gtest_discover_tests(obme_tests)

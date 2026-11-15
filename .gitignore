@@ -21,6 +21,7 @@ venv/
 data/*.csv
 data/out/
 data/lob_out/
+data/mm_out/
 *.parquet
 !data/README.md
 

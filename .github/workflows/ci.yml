@@ -43,6 +43,14 @@ jobs:
           python3 python/validate.py \
             --engine-book data/lob_out/book.csv --truth data/lob_truth.csv
 
+      - name: Market-making simulator smoke
+        run: |
+          python3 python/generate_synthetic.py --out data/mm_events.csv \
+            --events 20000 --seed 7
+          ./build/simulator/mm_sim data/mm_events.csv --out-dir data/mm_out
+          head -1 data/mm_out/fills.csv | grep -q "fill_id,time,side,price,qty"
+          test -s data/mm_out/pnl.csv
+
   python:
     name: Python format check
     runs-on: ubuntu-latest
